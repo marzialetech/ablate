@@ -63,12 +63,6 @@ std::vector<std::shared_ptr<ablate::domain::FieldDescription>> ablate::finiteVol
             region,
             ablate::parameters::MapParameters::Create({
         {"petscfv_type", "leastsquares"},
-        // BJ slope limiting on alphak's gradient is done by the in-house
-        // SlopeLimiter (cellInterpolant.cpp::ComputeFieldGradients), not by
-        // PETSc's built-in limiter. Setting "none" here disables PETSc's so
-        // we don't double-limit. compute_gradients=true upgrades alphak's
-        // face reconstruction in NPhaseFlowComputeAlphakFlux from donor-cell
-        // (zeroth-order) to limited MUSCL (second-order).
         {"petsclimiter_type", "none"},
         {"petscfv_compute_gradients", "true"}
     })),
@@ -81,10 +75,6 @@ std::vector<std::shared_ptr<ablate::domain::FieldDescription>> ablate::finiteVol
             region,
             ablate::parameters::MapParameters::Create({
         {"petscfv_type", "leastsquares"},
-        // alphakrhok's MUSCL reconstruction matters at face fluxes
-        // (NPhaseFlowComputeAlphakRhokFlux); in identical-EOS Zalesak this is
-        // a passive upgrade, but it also helps in real multi-density flows
-        // by keeping per-phase mass face values consistent with limited alphak.
         {"petsclimiter_type", "none"},
         {"petscfv_compute_gradients", "true"}
     })),

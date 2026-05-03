@@ -1,12 +1,4 @@
 ---
-# zalesak_2disk_3phase_pm
-#
-# 3-phase / 2-disk Zalesak test bench used as the FAST iteration rig for the
-# Chiu-Lin vs Parameswaran-Mandal sharpening comparison. Two disks 180 deg
-# apart on the y=0.5 axis (top disk k=0 with notch toward y=0.80, bottom disk
-# k=1 with notch toward y=0.20), background = k=2. All other parameters are
-# identical to runs/sweeps/AC_lowCFL_G4e-2/input.yaml so timing/discretization
-# numbers transfer cleanly. This is the baseline (PM) variant.
 environment:
   title: zalesak-2disk-3phase-pm-muscl-full-g1e3
   tagDirectory: true
@@ -99,7 +91,6 @@ solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
       epsilonk:      [0.005, 0.005, 0.005]
       flipPhiTildek: [0, 0, 0]
       boundaryLayerMultiplier: 3.0
-      # form omitted -> defaults to parameswaran_mandal (PM baseline)
   boundaryConditions:
     - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
       boundaryName: allaire walls

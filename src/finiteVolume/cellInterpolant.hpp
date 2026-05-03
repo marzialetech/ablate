@@ -128,13 +128,6 @@ class CellInterpolant {
     void ComputeRHS(PetscReal time, Vec locXVec, Vec locAuxVec, Vec locFVec, const std::shared_ptr<domain::Region>& solverRegion, std::vector<CellInterpolant::PointFunctionDescription>& rhsFunctions,
                     const ablate::domain::Range& cellRange, Vec cellGeomVec);
 
-    /**
-     * Access the BJ slope limiter owned by this CellInterpolant. Used by
-     * FiniteVolumeSolver to opt fields into MUSCL face reconstruction (see
-     * FiniteVolumeSolver::EnableSlopeLimiterFor). Fields not opted in have
-     * their gradient zeroed inside ApplyLimiter, collapsing reconstruction
-     * to donor-cell.
-     */
     SlopeLimiter& GetSlopeLimiter() { return *slopeLimiter; }
 };
 

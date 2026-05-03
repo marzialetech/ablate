@@ -1,22 +1,4 @@
 ---
-# SIDI 4-phase, 3 disks 120 deg apart + background.
-#
-# Static (quiescent) initially-diffuse-interface test, n-phase refactor of
-# the dissertation Sec. 2.1.2.3.1 / Sec. 2.2.1.1 SIDI bench. PM sharpening
-# only; no advection (zalesakTest is omitted, u=v=0 IC and BCs).
-#
-# Geometry: domain [0,1]^2, 200x200 grid (h=0.005). Three disks of radius
-# R=0.125 on a circle of radius d=0.27 about domain center (0.5,0.5), at
-# 90/210/330 deg. Background = phase 3.
-#
-# Initial alpha for each disk follows dissertation Eq. 2.19:
-#   alpha_k(r) = 0.5 * [ tanh((R+r_k)/(2*eps0)) + tanh((R-r_k)/(2*eps0)) ]
-# with r_k the radial distance from disk-k center and eps0 = 8h = 0.04
-# (8-cell-thick initial diffuse band, matches Sec. 2.2.1.1).
-#
-# Acceptance: eps_char(0)/h ~ 8 -> eps_char(tf)/h ~ O(1) (see
-# tools/sidi_thickness.py). Gamma=4e-2 baseline (Zalesak-validated).
-
 environment:
   title: sidi-4phase-pm-g4e2
   tagDirectory: true

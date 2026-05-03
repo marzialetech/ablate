@@ -19,8 +19,6 @@ namespace ablate::finiteVolume::processes {
 
     ablate::finiteVolume::processes::NPhaseIntSharp::Form
     ablate::finiteVolume::processes::NPhaseIntSharp::ParseForm(const std::string &raw) {
-        // Accept any case + ignore separators (- _ space) so users can write
-        // "chiu_lin", "Chiu-Lin", "ChiuLin", etc.
         std::string s;
         s.reserve(raw.size());
         for (char c : raw) {
@@ -62,10 +60,6 @@ namespace ablate::finiteVolume::processes {
         PetscInt dim;
         DMGetDimension(dm, &dim) >> utilities::PetscUtilities::checkError;
 
-        // Clone the topology of the simulation DM and attach a fresh local section
-        // with dim*phases dofs per cell. The clone shares topology + coordinate DM
-        // with the parent, so the per-face geometry queries used by
-        // DMPlexCellGradFromCell continue to work.
         DMClone(dm, &fluxDM) >> utilities::PetscUtilities::checkError;
 
         DM coordDM = nullptr;
@@ -87,7 +81,6 @@ namespace ablate::finiteVolume::processes {
         PetscSectionDestroy(&section) >> utilities::PetscUtilities::checkError;
         DMSetUp(fluxDM) >> utilities::PetscUtilities::checkError;
 
-        // Trigger geometry caches (also populates DMPlexGetMinRadius for fluxDM).
         Vec cellGeom = nullptr, faceGeom = nullptr;
         DMPlexComputeGeometryFVM(fluxDM, &cellGeom, &faceGeom) >> utilities::PetscUtilities::checkError;
         if (cellGeom) VecDestroy(&cellGeom) >> utilities::PetscUtilities::checkError;
@@ -119,9 +112,6 @@ namespace ablate::finiteVolume::processes {
         PetscInt cStart, cEnd;
         DMPlexGetHeightStratum(dm, 0, &cStart, &cEnd);
 
-        // Ghost cells (created by PETSc for BC stencils) appear in the height stratum but have
-        // no real geometry; calling DMPlexComputeCellGeometryFVM on them errors. Skip them via
-        // the "ghost" DMLabel which DMPlex sets when ghost cells are created.
         DMLabel ghostLabel = nullptr;
         DMGetLabel(dm, "ghost", &ghostLabel);
 
@@ -168,10 +158,6 @@ namespace ablate::finiteVolume::processes {
         if (it != cellBoundaryWeights.end()) {
             return it->second;
         }
-        // Cells absent from the map were excluded by ComputeBoundaryInformation
-        // (e.g. ghost cells with no real geometry). Treat them as boundary-like so
-        // the PreStage loop skips them via the existing weight < 0.5 check, instead
-        // of trying to compute geometry on cells that have no cell type assigned.
         return 0.0;
     }
 
@@ -228,13 +214,6 @@ namespace ablate::finiteVolume::processes {
         }
         //PetscPrintf(MPI_COMM_WORLD, "[NPhaseIntSharp::Setup] fvSolver cast successful\n");
 
-        // Single user-facing toggle: presence of NPhaseIntSharp in the YAML
-        // processes block opts the volume-fraction / per-phase-mass fields
-        // into BJ slope limiting (MUSCL face reconstruction). Without this
-        // call the SlopeLimiter zeroes the gradient on those fields and the
-        // downstream face reconstruction is donor-cell. CellInterpolant is
-        // built lazily inside FiniteVolumeSolver::ComputeRHSFunction; the
-        // FV solver caches these requests and replays them at construction.
         fvSolver->EnableSlopeLimiterFor(ablate::finiteVolume::NPhaseFlowFields::ALPHAK);
         fvSolver->EnableSlopeLimiterFor(ablate::finiteVolume::NPhaseFlowFields::ALPHAKRHOK);
         PetscPrintf(PETSC_COMM_WORLD,
@@ -317,10 +296,6 @@ namespace ablate::finiteVolume::processes {
         Vec auxVec = subDomain->GetAuxVector();
         //PetscPrintf(MPI_COMM_WORLD, "[NPhaseIntSharp::PreStage] Got aux vector\n");
         
-        // Note: cell iteration in this routine uses cellRange (acquired above via
-        // GetCellRangeWithoutGhost), not raw [cStart, cEnd) from DMPlexGetHeightStratum.
-        // The latter would include FVM ghost cells which have no cell type assigned and
-        // would crash any DMPlexComputeCellGeometryFVM call below.
         
         //PetscPrintf(MPI_COMM_WORLD, "[NPhaseIntSharp::PreStage] About to get vertex vector\n");
         Vec vertexVec; 
@@ -383,42 +358,7 @@ namespace ablate::finiteVolume::processes {
         // DMPlexGetMinRadius(auxDM, &h);
         // //PetscPrintf(MPI_COMM_WORLD, "[NPhaseIntSharp::PreStage] Min radius: %f\n", h);
 
-        // -----------------------------------------------------------------------------
-        // CHIU_LIN: face-based finite-volume divergence of the antidiffusive flux.
-        //
-        // For each phase k the conservative form is:
-        //     d(alpha_k)/d(tau) = div(F_k),
-        //     F_k = Gamma_k * [ epsilon_k * grad(alpha_k)
-        //                       - alpha_k(1 - alpha_k) * grad(alpha_k) / |grad(alpha_k)| ].
-        //
-        // The previous implementation computed F_k at cell centers using ablate's
-        // least-squares cell-gradient operator and then took the divergence using the
-        // SAME LSQ operator on F_k. That stencil is not TVD-friendly: at sharp
-        // alpha interfaces it produced oscillatory cell-to-cell gradient values
-        // (aliasing) which the divergence operator amplified into checkerboard fsharp
-        // patterns inside the disk interior. Visually we observed phase-swap speckle
-        // in the disk cores at any meaningful Gamma; the result was structurally wrong
-        // regardless of Gamma magnitude.
-        //
-        // This new implementation evaluates F_k . n at each MESH FACE using
-        //     dalpha_dn = (alpha_R - alpha_L) / |L->R|              (FD, monotone)
-        //     alpha_f   = 0.5 * (alpha_L + alpha_R)
-        //     sign_g    = sign(alpha_R - alpha_L)
-        //     F . n     = Gamma * eps * dalpha_dn  -  Gamma * af*(1-af) * sign_g
-        // and integrates around each cell:
-        //     fsharp_c = (1/V_c) * Sum_{faces of c} (F . n_out) * area.
-        // This is a Green-Gauss face-flux divergence: conservative by construction,
-        // bounded (the antidiffusive coefficient is alpha*(1-alpha) <= 1/4), and free
-        // of the LSQ aliasing because the normal gradient at each face is just a
-        // 2-point FD between adjacent cell centers.
-        //
-        // boundaryLayerMultiplier still gates the result -- the cell-level
-        // GetBoundaryWeight check inside the projection cell loop below zeroes any
-        // fsharp values written into the boundary band, mirroring PM behavior.
-        // -----------------------------------------------------------------------------
         if (form == Form::CHIU_LIN) {
-            // Zero fsharpk for every cell that has local storage (real + ghost). The
-            // projection loop only reads real cells via cellRange.
             for (PetscInt c = cellRange.start; c < cellRange.end; ++c) {
                 const PetscInt cell = cellRange.GetPoint(c);
                 PetscScalar *fsharpkCell = nullptr;
@@ -462,7 +402,6 @@ namespace ablate::finiteVolume::processes {
                 PetscReal normalF[3]   = {0.0, 0.0, 0.0};
                 DMPlexComputeCellGeometryFVM(dm, face, &areaFace, centroidF, normalF) >> utilities::PetscUtilities::checkError;
 
-                // L->R distance (used as the FD denominator for the normal gradient).
                 PetscReal dn = 0.0;
                 for (PetscInt d = 0; d < dim; ++d) {
                     PetscReal dxd = centroidR[d] - centroidL[d];
@@ -482,8 +421,6 @@ namespace ablate::finiteVolume::processes {
                 xDMPlexPointLocalRef(auxDM, L, fsharpkField.id, auxArray, &fsharpL);
                 xDMPlexPointLocalRef(auxDM, R, fsharpkField.id, auxArray, &fsharpR);
 
-                // Boundary-band check at L and R (skip writing into a cell that the
-                // boundary mask wants to hold fixed).
                 const PetscReal wL = process->GetBoundaryWeight(L);
                 const PetscReal wR = process->GetBoundaryWeight(R);
 
@@ -491,9 +428,6 @@ namespace ablate::finiteVolume::processes {
                     const PetscReal aL = alphakL[k];
                     const PetscReal aR = alphakR[k];
 
-                    // No interface across this face: both sides are deep in the same
-                    // extreme. Skip any flux; this also zeros the antidiffusive driver
-                    // before it can grow on machine-precision noise inside a phase core.
                     if ((aL <= 1e-3 && aR <= 1e-3) || (aL >= 1.0 - 1e-3 && aR >= 1.0 - 1e-3)) {
                         continue;
                     }
@@ -508,31 +442,18 @@ namespace ablate::finiteVolume::processes {
                     const PetscReal Gk = process->Gammak[k];
                     const PetscReal Ek = process->epsilonk[k];
 
-                    // F . n_LR = Gamma*eps * (dalpha/dn)  -  Gamma * af*(1-af) * sign(dalpha/dn)
                     const PetscReal F_dot_n = Gk * Ek * dad - Gk * aftilde * (1.0 - aftilde) * sg;
                     const PetscReal flux_LR = F_dot_n * areaFace;     // signed mass flux across face
 
-                    // div(F)_c = (1/V_c) * Sum (F . n_out) * area. n_out at L is L->R, so
-                    // contribution at L is +flux_LR/V_L. n_out at R is the opposite, so
-                    // contribution at R is -flux_LR/V_R.
                     if (fsharpL && wL >= 0.5) fsharpL[k] += flux_LR / volL;
                     if (fsharpR && wR >= 0.5) fsharpR[k] -= flux_LR / volR;
                 }
             }
         }
 
-        // Iterate real cells via cellRange.GetPoint(c). cellRange came from
-        // GetCellRangeWithoutGhost above, which excludes FVM ghost cells. This is the
-        // ablate convention used by nPhaseAllaireAdvection / chemistry / navierStokesTransport
-        // / etc.; it makes the loop correct in 2D, 3D, and parallel without any
-        // raw-stratum + ghost-label band-aid.
         for (PetscInt c = cellRange.start; c < cellRange.end; ++c) {
             const PetscInt cell = cellRange.GetPoint(c);
 
-            // Boundary-layer guard: skip cells inside the analytical-boundary buffer.
-            // ComputeBoundaryInformation already excluded any ghost cells from the weight
-            // map, and GetBoundaryWeight returns 0.0 for unmapped cells, so a stray ghost
-            // making it here would also be skipped via this same path.
             PetscReal boundaryWeight = process->GetBoundaryWeight(cell);
             if (boundaryWeight < 0.5) continue;
 
@@ -631,47 +552,20 @@ namespace ablate::finiteVolume::processes {
 
                     fsharpk[k] = Gammak * ( (-1 * alphaktilde) * (1 - alphaktilde) * (1 - 2 * alphaktilde) + epsilonk * (1 - 2 * alphaktilde) * normgradalphak );
                 } else {
-                    // CHIU_LIN: fsharpk[k] was already computed in the face-based pass
-                    // before this cell loop. Leave it as-is; the gate above (extreme
-                    // alphak -> fsharp = 0) still applies via the early-continue earlier
-                    // in this k-loop.
                 }
                 // Boundary weight already checked at start of cell loop - no need to multiply here
                 // PetscPrintf(MPI_COMM_WORLD, "[NPhaseIntSharp::PreStage] Cell %d: fsharpk[%zu] = %g\n", cell, k, fsharpk[k]);
             }
             //PetscPrintf(MPI_COMM_WORLD, "[NPhaseIntSharp::PreStage] Cell %d: fsharpk computed\n", cell);
 
-            // Sharpening pseudo-time update applied as a thermodynamically-consistent
-            // PROJECTION step (mirrors intSharp-marziale.cpp:591-599 for the n-phase case).
-            //
-            // The previous version applied fsharp to alpha, clipped per-phase to [0,1], and
-            // rebuilt alphakrhok = alpha * rhokold + RHOU = rho * uiold -- but it left out
-            // (a) the partition-of-unity renormalization that the per-phase clip breaks,
-            // (b) the RHOE rebalance that keeps specific internal energy fixed when rho
-            //     drifts, and
-            // (c) a fallback rhok for cells where intsharp pushes alpha into a phase that
-            //     was previously absent (rhokold = 0 there, so mass would silently vanish).
-            // For n-identical-EOS test cases, leaving any of these out drives a slow but
-            // unbounded pressure leak through the EOS coupling alpha -> alphakrhok ->
-            // internal energy -> pressure (observed empirically: chiu_lin Γ=8e-3 NaN'd
-            // at step 350, Γ=5e-3 at extrapolated ~step 1500). Fixing all three makes the
-            // sharpening update an internal-energy-preserving phase-indicator regularization.
 
-            // Cache specific internal energy and squared velocity from the pre-update
-            // state; these are the invariants we want to preserve across the projection.
             PetscReal v2_old = 0.0;
             for (PetscInt d = 0; d < dim; ++d) v2_old += uiold[d] * uiold[d];
             PetscReal rhoe_old = allFields[ablate::finiteVolume::NPhaseFlowFields::RHOE];
             PetscReal e_old = (rhoe_old - 0.5 * rhoold * v2_old) / rhoold;
 
-            // Default per-phase density for cells where alphak[k] was 0 at entry: use the
-            // mixture density rhoold. For n-identical-EOS this is exactly correct (every
-            // rhok is identically rhoold). For non-identical phases this is the best
-            // local proxy we have; the EOS will correct on the next NPhaseAllaireAdvection
-            // PreStage anyway.
             PetscReal rhok_fallback = rhoold;
 
-            // Apply sharpening source per-phase, then clip to [0,1].
             for (std::size_t k = 0; k < phases; ++k) {
                 PetscScalar *fsharpk;
                 xDMPlexPointLocalRef(auxDM, cell, fsharpkField.id, auxArray, &fsharpk);
@@ -680,9 +574,6 @@ namespace ablate::finiteVolume::processes {
                 else if (allFields[alphakField.offset + k] > 1.0) allFields[alphakField.offset + k] = 1.0;
             }
 
-            // Renormalize so sum_k alphak = 1 (the per-phase clip above generally breaks
-            // partition-of-unity by O(eps); without this rebalance, the broken sum drifts
-            // total density which drives the pressure leak).
             PetscReal alphasum = 0.0;
             for (std::size_t k = 0; k < phases; ++k) alphasum += allFields[alphakField.offset + k];
             if (alphasum > PETSC_SMALL) {
@@ -690,8 +581,6 @@ namespace ablate::finiteVolume::processes {
                 for (std::size_t k = 0; k < phases; ++k) allFields[alphakField.offset + k] *= invsum;
             }
 
-            // Rebuild alphakrhok using cached per-phase density (with fallback for newly
-            // appearing phases) and accumulate the new mixture density.
             PetscReal rho = 0.0;
             for (std::size_t k = 0; k < phases; ++k) {
                 PetscReal rhok_k = (rhokold[k] > PETSC_SMALL) ? rhokold[k] : rhok_fallback;
@@ -699,11 +588,6 @@ namespace ablate::finiteVolume::processes {
                 rho += allFields[alphakrhokField.offset + k];
             }
 
-            // Preserve velocity (uiold) and specific internal energy (e_old) by
-            // rebuilding RHOU and RHOE from the new mixture density. For n-identical-EOS
-            // this is exact (rho == rhoold, so RHOU and RHOE return to their pre-fsharp
-            // values modulo roundoff). For general n-phase it preserves specific
-            // thermodynamic state through the projection.
             for (PetscInt d = 0; d < dim; ++d) {
                 allFields[ablate::finiteVolume::NPhaseFlowFields::RHOU + d] = rho * uiold[d];
             }

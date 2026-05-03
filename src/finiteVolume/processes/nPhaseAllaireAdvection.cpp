@@ -127,20 +127,6 @@ void ablate::finiteVolume::processes::NPhaseAllaireAdvection::Setup(ablate::fini
         PetscPrintf(MPI_COMM_WORLD, "[NPhaseAllaireAdvection::Setup] ALPHAKRHOK field offset: %d\n", subDomain.GetField(ALPHAKRHOK).offset);
         PetscPrintf(MPI_COMM_WORLD, "[NPhaseAllaireAdvection::Setup] ALLAIRE_FIELD offset: %d\n", subDomain.GetField(NPhaseFlowFields::ALLAIRE_FIELD).offset);
         
-        // Register Zalesak source. The original Zalesak test is a rigid-body rotation of
-        // a phase-indicator field; the underlying compressible flow is just scaffolding.
-        // To prevent the Allaire 5-equation chain (AUSM+up flux + nonconservative product)
-        // from drifting rho / eps / p at sharp alpha interfaces -- which we measured at
-        // ~1% per 100 steps in the n-identical-EOS test bench, identical with or without
-        // intsharp -- the source forces ALL non-interface fields (momentum, total energy,
-        // and per-phase mass) onto their IC-uniform target values every step. After this
-        // forcing the test behaves as a pure phase-indicator advection on top of a
-        // uniform rotational background, isolating intsharp's effect on phase indicators.
-        //
-        // Outputs: ALLAIRE_FIELD (RHOE, RHOU, RHOV) and ALPHAKRHOK (per-phase mass).
-        // Inputs:  ALLAIRE_FIELD (for current momentum/energy), ALPHAKRHOK (for current
-        //          per-phase mass and mixture rho), ALPHAK (target distribution for
-        //          alphakrhok = alphak * rho_const).
         flow.RegisterRHSFunction(static_cast<ablate::finiteVolume::CellInterpolant::PointFunction>(ZalesakTestSourceTerm),
             this,
             {NPhaseFlowFields::ALLAIRE_FIELD, ALPHAKRHOK},    // Outputs
@@ -295,11 +281,6 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseAllaireAdvection::UpdateAu
             for (std::size_t k = 0; k < nPhaseAllaireAdvection->eosk.size(); k++) {
                 auxField[aOff[f] + k] = internalEnergyk[k];
 
-                // Per-cell, per-phase printf was firing on every absent phase (alphak=0 ->
-                // internalEnergyk=0 trips the <=0 branch), producing O(N_cells * N_phases)
-                // stdout lines per RHS evaluation. That dominated wall-clock time and was
-                // also misleading: alphak=0 is the expected case in N-phase, not an error.
-                // Re-enable behind a real debug flag if a future investigation needs it.
             }
         }
         else if (fields[f] == NPhaseFlowFields::SOSK) {
@@ -1011,11 +992,6 @@ void ablate::finiteVolume::processes::NPhaseAllaireAdvection::NStiffDecoder::Dec
         pik[k] = eosk[k]->GetReferencePressure();
     }
 
-    // First compute alpha_k and alpha_k*rho_k from conserved values.
-    // ALPHAK_FLOOR (defined in NPhaseFlowFields) is the threshold below which a phase
-    // is treated as absent. Trace amounts (~1e-10) leaked in by numerical advection
-    // diffusion would otherwise be amplified by rhok = (alpha*rhok)/alpha and feed
-    // back into AusmpUp as huge per-phase sosk -> NaN within ~200 steps.
     for (std::size_t k = 0; k < phases; k++) {
         alphak[k] = conservedValues[uOff[0] + k];  // alpha_k
 
@@ -1045,22 +1021,18 @@ void ablate::finiteVolume::processes::NPhaseAllaireAdvection::NStiffDecoder::Dec
     // Compute total energy per unit mass e = (rho*e)/(rho + PETSC_SMALL)
     PetscReal e = conservedValues[ablate::finiteVolume::NPhaseFlowFields::RHOE] / (rho + PETSC_SMALL);  // e = (rho*e)/(rho + PETSC_SMALL)
 
-    // First-100-cells decode dump silenced; was useful while bringing up shear-rate
-    // computation but produces a deluge of unactionable output during steady runs.
     PetscBool debugThis = PETSC_FALSE;
     
     // Compute pressure
     PetscReal numerator = conservedValues[uOff[2] + ablate::finiteVolume::NPhaseFlowFields::RHOE];  // rho*e
     numerator -= 0.5 * rho * uiui;  // subtract kinetic energy term
     
-    // Subtract sum_k (alpha_k*gamma_k*pi_k)/(gamma_k-1) over computationally-present phases.
     for (std::size_t k = 0; k < phases; k++) {
         if (alphak[k] > NPhaseFlowFields::ALPHAK_FLOOR) {
             numerator -= alphak[k] * gammak[k] * pik[k] / (gammak[k] - 1.0);
         }
     }
 
-    // Compute denominator sum_k (alpha_k)/(gamma_k-1) over computationally-present phases.
     PetscReal denominator = 0.0;
     for (std::size_t k = 0; k < phases; k++) {
         if (alphak[k] > NPhaseFlowFields::ALPHAK_FLOOR) {
@@ -1077,24 +1049,14 @@ void ablate::finiteVolume::processes::NPhaseAllaireAdvection::NStiffDecoder::Dec
                     rho, e, uiui, numerator, denominator, p);
     }
     
-    // Negative-or-tiny pressure warning silenced: it fires for every empty/ghost-like
-    // cell every RHS evaluation and dominated wall-clock time. The arithmetic still
-    // proceeds with whatever p comes out; downstream NaN guards catch real corruption.
 
     // Compute internal energy per unit mass epsilon = e - u_i*u_i/2
     PetscReal epsilon = e - 0.5 * uiui;
 
-    // Compute phase-specific quantities only for computationally-present phases.
-    // Phases below ALPHAK_FLOOR were already zeroed (rhok=ek=Tk=0) above; here we just
-    // skip them so we don't hit (gamma-1)*0 + PETSC_SMALL ~ 1e-20 which would amplify
-    // any numerator into a 1e20-ish ek and eventually NaN.
     for (std::size_t k = 0; k < phases; k++) {
         if (alphak[k] > NPhaseFlowFields::ALPHAK_FLOOR) {
             // Compute internal energy per unit mass for phase k
             PetscReal denom_ek = (gammak[k] - 1.0) * rhok[k];
-            // Per-phase tiny-denominator warning silenced: fires for every absent phase
-            // (alphak~0 -> rhok~0) at every cell every RHS evaluation; defensive
-            // PETSC_SMALL added below makes the division well-defined regardless.
             ek[k] = (p + gammak[k] * pik[k]) / (denom_ek + PETSC_SMALL);
             
             // Debug: Check for problematic epsilonk values
@@ -1103,10 +1065,6 @@ void ablate::finiteVolume::processes::NPhaseAllaireAdvection::NStiffDecoder::Dec
                             k, alphak[k], rhok[k], p, ek[k]);
             }
             
-            // Per-phase invalid-ek error silenced for the same reason: a fully passive
-            // 5-phase advection trips it on every empty phase every step. NaN/Inf
-            // values still propagate; the global safety nets in NPhaseAllaireAdvection
-            // and the timestepper catch a truly broken solution.
             
             // Compute temperature for phase k
             Tk[k] = gammak[k] * (ek[k] - pik[k]/rhok[k]) / Cpk[k];
@@ -1141,8 +1099,6 @@ void ablate::finiteVolume::processes::NPhaseAllaireAdvection::NStiffDecoder::Dec
             (*akOut)[k] = PetscSqrtReal((gammak[k] - 1.0) * Cpk[k] * Tk[k]);
             (*MkOut)[k] = *normalVelocityOut / (*akOut)[k];
         } else {
-            // Absent phase: avoid 0/0 in the Mach number and 1/0 in any mixture sound
-            // speed sum further downstream (see nPhaseNonconservativeRHS).
             (*akOut)[k] = 0.0;
             (*MkOut)[k] = 0.0;
         }
@@ -1166,61 +1122,35 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseAllaireAdvection::ZalesakT
     PetscInt dim, PetscReal time, const PetscFVCellGeom* cg, const PetscInt uOff[], const PetscScalar u[], const PetscInt aOff[], const PetscScalar a[], PetscScalar f[], void* ctx) {
     PetscFunctionBeginUser;
 
-    // Inputs (per registration in Setup): uOff[0] = ALLAIRE_FIELD, uOff[1] = ALPHAKRHOK,
-    // uOff[2] = ALPHAK. Phase count is taken from the eosk vector that was registered
-    // when the process was constructed.
     auto* nPhase = static_cast<NPhaseAllaireAdvection*>(ctx);
     const std::size_t phases = nPhase->eosk.size();
     const PetscInt allaireOffset    = uOff[0];
     const PetscInt alphakrhokOffset = uOff[1];
     const PetscInt alphakOffset     = uOff[2];
 
-    // Outputs are laid out contiguously in f[] in registration order:
-    //     [ ALLAIRE (1+dim comps)  |  ALPHAKRHOK (phases comps) ]
-    // ALLAIRE within-field component layout: RHOE=0, RHOU=1, RHOV=2 (RHOW=3 in 3D).
     const PetscInt allaireOutOff    = 0;
     const PetscInt alphakrhokOutOff = 1 + dim;
 
-    // Zero the entire output slice up-front so any unset component is a clean 0.
     for (PetscInt i = 0; i < allaireOutOff + (1 + dim) + (PetscInt)phases - allaireOutOff; ++i) {
         f[i] = 0.0;
     }
 
-    // Cell centroid -> rotational target velocity (omega = 30 rad/s, axis (0.5,0.5)).
     const PetscReal x = cg->centroid[0];
     const PetscReal y = (dim > 1) ? cg->centroid[1] : 0.0;
     const PetscReal u_target = 30.0 * (0.5 - y);
     const PetscReal v_target = 30.0 * (x - 0.5);
     const PetscReal v2_target = u_target * u_target + v_target * v_target;
 
-    // Targets for the n-identical-phase rigid-body rotation test bench. These match the
-    // initial-condition formula in the YAML constants block (rho=1, eps=2.5). The point
-    // of forcing them is to make the Zalesak test purely a phase-indicator advection
-    // problem on top of a uniform rotational background, so that the underlying Allaire
-    // chain (AUSM+up + nonconservative product) cannot drift rho/eps/p at sharp alpha
-    // interfaces. Per-phase mass alphakrhok[k] tracks alphak[k] exactly: alphakrhok =
-    // alphak * rho_const. This is faithful to the dissertation's intent ("solve the
-    // Zalesak rotation against a uniform velocity field"). It does NOT generalize to
-    // physical multi-phase flows -- it's strictly a test-bench feature gated by the
-    // zalesakTest flag.
     constexpr PetscReal rho_const = 1.0;
     constexpr PetscReal eps_const = 2.5;
 
-    // Hard-coded "relaxation" dt. With ts_dt == this dt and explicit Euler the per-step
-    // contribution is (target - current); for ts_dt < this all targets are under-relaxed
-    // by ts_dt/dt per step. Use the same dt for every component so the forcing of rho,
-    // momentum, and energy is internally consistent.
     constexpr PetscReal dt = 1e-4;
     constexpr PetscReal inv_dt = 1.0 / dt;
 
-    // Current allaire components.
     const PetscReal rhoU_current = u[allaireOffset + NPhaseFlowFields::RHOU];
     const PetscReal rhoV_current = (dim > 1) ? u[allaireOffset + NPhaseFlowFields::RHOV] : 0.0;
     const PetscReal rhoE_current = u[allaireOffset + NPhaseFlowFields::RHOE];
 
-    // Targets: rho_const * v_target, rho_const * (eps + 0.5 v^2). Note we use rho_const
-    // (not the cell's current sum_k alphakrhok) because we are explicitly forcing rho
-    // back to its IC value -- mixing in the drifted current rho would defeat the point.
     const PetscReal rhoU_target = rho_const * u_target;
     const PetscReal rhoV_target = rho_const * v_target;
     const PetscReal rhoE_target = rho_const * (eps_const + 0.5 * v2_target);
@@ -1229,17 +1159,12 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseAllaireAdvection::ZalesakT
         PetscPrintf(MPI_COMM_WORLD, "ZALESAK TEST DEBUG: NaN/Inf velocity detected at time=%g, x=%g, y=%g\n", time, x, y);
     }
 
-    // Force allaire fields toward their IC-uniform targets.
     f[allaireOutOff + NPhaseFlowFields::RHOU] = (rhoU_target - rhoU_current) * inv_dt;
     if (dim > 1) {
         f[allaireOutOff + NPhaseFlowFields::RHOV] = (rhoV_target - rhoV_current) * inv_dt;
     }
     f[allaireOutOff + NPhaseFlowFields::RHOE] = (rhoE_target - rhoE_current) * inv_dt;
 
-    // Force per-phase mass to track per-phase volume fraction at constant rho_const.
-    // This pins sum_k alphakrhok = rho_const * sum_k alphak = rho_const (when alphak
-    // is partitioned via intsharp's renormalization; otherwise this still drives the
-    // mixture rho toward the right partial sum).
     for (std::size_t k = 0; k < phases; ++k) {
         const PetscReal alphakrhok_target = u[alphakOffset + k] * rho_const;
         const PetscReal alphakrhok_current = u[alphakrhokOffset + k];

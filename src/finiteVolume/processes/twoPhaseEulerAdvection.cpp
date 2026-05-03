@@ -1267,12 +1267,6 @@ void ablate::finiteVolume::processes::TwoPhaseEulerAdvection::PerfectGasStiffene
 
 
 
-      // Check all of the required relationships.
-      // Tolerance loosened from 1e-10 to 1e-6: 1e-10 is tighter than the working precision of
-      // the stiffened-gas Newton solve once surface tension momentum kicks in at the interface
-      // (slab72-fixed, t ~ 2.4e-4).  1e-6 still represents a 0.0001% volume-balance check, far
-      // tighter than anything physically meaningful, and the author left the analogous energy
-      // and pressure consistency checks commented out below for the same reason.
       if (PetscAbsReal(Yg/rhoG + Yl/rhoL - 1.0/density) > 1e-6) throw std::runtime_error("Eq (32) is not satisfied.\n");
 //      if (PetscAbsReal(Yg*eG + Yl*eL - e) > 1e-10) throw std::runtime_error("Eq (33) is not satisfied.\n");
 //      if (PetscAbsReal(pL - pG) > 1e-10) throw std::runtime_error("Pressure equilibrium is not satisfied.\n");

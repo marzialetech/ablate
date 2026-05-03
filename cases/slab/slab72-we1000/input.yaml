@@ -1,41 +1,4 @@
 ---
-# slab72-we1000: dissertation We=1000 slab-burner lobe study (Sec. 4.4), run for
-# 10*tau_adv (tau_adv = L_lobe / U_shear = 0.01/70.71 = 1.41e-4 s) to allow the lobe
-# to equilibrate.
-#
-# Geometry. Two-phase 2D box with a paraffin slab from y=0 to y=0.005 (inlet side)
-# and y=0 to y=0.015 (outlet side), air above. The inlet shear ramp drives the air,
-# deforming the lobe at the slab top.
-#
-# Numerics. ts_max_time = 1.4e-3 s = 10*tau_adv. RK2 (Heun) integrator. dt = 5e-8 s
-# (CFL ~0.3). 28000 steps, 141 HDF5 snapshots. The post-processor's
-# --detect-equilibrium flag walks the median-filtered theta(t) trajectory looking
-# for the first sliding window of width tau_adv with range(theta) < 0.5 deg sustained
-# over two consecutive windows, only after a t >= 3*tau_adv min-time floor; if it
-# never fires the trajectory is run to the hard cap and reported as non-converging.
-#
-# Codebase convention NOTE. TwoPhaseEulerAdvection forces (PerfectGas, StiffenedGas)
-# ordering inside its decoder (twoPhaseEulerAdvection.cpp:836-845): the conserved
-# field `densityvolumeFraction` is hardcoded as `alpha_PerfectGas * rho_PerfectGas`.
-# We therefore keep eos1 = PerfectGas (air), eos2 = StiffenedGas (paraffin). The
-# user-visible flip (vof=1 <-> paraffin / lobe) is realized in the post-processing
-# layer by plotting (1 - alpha).
-#
-# Setup details:
-#   1) Spatially-correct (y-piecewise) Dirichlet BCs at inlet/outlet/upper/slab so
-#      the boundary value matches the interior IC at every point. Slab face is
-#      alpha=0 (paraffin), inlet below y=0.005 is alpha=0 (paraffin), outlet below
-#      y=0.015 is alpha=0 (paraffin). Physical convention (vof=1 means lobe) is
-#      recovered in post-processing.
-#   2) SurfaceForce enabled with sigma=50 (dissertation Sec. 4.4) and
-#      applyToSolution=true. With alpha = alpha_air (primary phase has phi=1),
-#      flipPhiTilde=true so the smoothed indicator used for curvature / force is
-#      the liquid (paraffin) fraction (1 - alpha).
-#   3) airCp = 717.5 J/kg/K (Cp for air); internal energy uses Cv = airCp/airGamma
-#      in the IC and BCs.
-#   4) Inlet shear velocity profile is a linear ramp
-#      u(y) = shearRate * min(1, y/(4*h_bc)).
-#   5) Time integrator: explicit RK2 (Heun) for stability margin under SurfaceForce.
 environment:
   title: slab2dcoords
   tagDirectory: false
@@ -49,15 +12,7 @@ arguments:
 timestepper:
   name: theMainTimeStepper
   arguments:
-    # Stability check: with dt=5e-8 the CFL ~ 0.1 and the surface-tension stability bound
-    # dt_st ~ sqrt(rho_paraffin*h^3/sigma) ~ 5e-5 is three orders of magnitude looser, so explicit Euler
-    # is safe.  RK2 was attempted as a margin-of-safety measure but doubles the SurfaceForce cost
-    # per step; we revert to Euler to keep wall-clock comparable to slab72-asis.
     ts_type: euler
-    # 1.4e-3 = 10 * tau_adv (where tau_adv = L_lobe / U_shear = 0.01/70.71 ~ 1.41e-4 s).
-    # Hard cap for Part 3 equilibration window; soft termination is performed in postproc
-    # via tools/postprocess_slab.py --detect-equilibrium (median-filtered range-of-theta
-    # < 0.5 deg over two consecutive 1*tau_adv windows after t >= 3*tau_adv).
     ts_max_time: 1.4e-3
     ts_dt: 5e-8
     ts_adapt_type: none
@@ -182,19 +137,6 @@ timestepper:
       dm_distribute: false
       dm_refine: 0
   initialization:
-    # volumeFraction = alpha_PerfectGas (air fraction), per the codebase convention
-    # enforced in TwoPhaseEulerAdvection (alpha = densityVF / rho_eos1 with
-    # eos1 = PerfectGas).
-    #
-    # Level-set sign convention. ablate::levelSet::Utilities::VOF returns 1 where the
-    # level set is NEGATIVE (LS-VOF.cpp lines 53-58). The naive form `phi = y - slabTop`
-    # gives phi < 0 inside the slab => VOF=1 inside the slab; combined with density
-    # formulas that assume vof=1 means air, the slab cells would be set to
-    # ~1.16 kg/m^3 (air density) instead of paraffin density (an air-on-paraffin
-    # configuration inverted relative to the dissertation). We therefore use
-    # phi = slabTop - y so phi > 0 inside the slab => VOF=0 inside the slab =>
-    # alpha_air=0 inside the slab => the slab is paraffin (Y_w = 1 by the formulas
-    # below), matching the dissertation setup.
     - fieldName: volumeFraction
       field: !<!ablate::mathFunctions::Formula> &2
         formula: f1
@@ -425,7 +367,6 @@ solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
         fieldName: volumeFraction
         field: 1.0
     # ---- Slab boundary (under and beneath the slab): pure paraffin at rest ----
-    # This is the BC that was wrong in slab72-asis (it forced alpha=1 / airDensity here).
     - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
       boundaryName: euler_slab
       labelIds: [slabBoundaryCells]

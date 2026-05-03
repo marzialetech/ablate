@@ -17,11 +17,6 @@
 # All five phases use the same KthStiffenedGas EOS (gamma=1.4, Cp=1004.5, p0=0) so this
 # behaves as a passive multi-tracer rotational advection test. NPhaseIntSharp keeps the
 # four interfaces (each disk vs. background) sharp.
-#
-# Smoke-test deck for the NPhaseIntSharp process: confirms it compiles, finds the
-# registered fsharpk aux field, survives the ghost-cell DMPlex iteration in
-# ComputeBoundaryInformation, and produces nonzero fsharpk values in interfacial
-# cells for all four disk-vs-background interfaces.
 
 environment:
   title: nphase-zalesak-5phase
@@ -149,10 +144,6 @@ solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
         mInf: 0.3
     - !<!ablate::finiteVolume::processes::NPhaseNonconservativeRHS>
       mInf: 0.3
-    # NPhaseIntSharp smoke check: must (a) load, (b) find the registered fsharpk aux
-    # field, (c) survive ComputeBoundaryInformation on a 2D mesh with GhostBoundaryCells,
-    # and (d) produce nonzero fsharpk values in interfacial cells for all four
-    # disk-vs-background interfaces.
     - !<!ablate::finiteVolume::processes::NPhaseIntSharp>
       # Gammak carries the per-RK-stage magnitude of the interface-sharpening update
       # (fsharpk is added directly to alphak inside PreStage; the hardcoded dt=1e-4 the

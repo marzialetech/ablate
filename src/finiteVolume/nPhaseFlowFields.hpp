@@ -57,17 +57,8 @@ class NPhaseFlowFields : public domain::FieldDescriptor {
     inline const static std::string AIJ = "aij";
     // inline const static std::string USTAR = "ustar";
 
-    //! per-phase interface-sharpening RHS contribution (NPhaseIntSharp); aux field with one component per phase
     inline const static std::string FSHARPK = "fsharpk";
 
-    //! Volume-fraction floor below which a phase is treated as computationally absent
-    //! by the EOS decode and downstream flux/mixing rules. Trace amounts (alpha ~ 1e-10)
-    //! produced by numerical advection diffusion would otherwise be amplified by
-    //! rhok = (alpha*rhok)/alpha and ek = (p + gamma*pi)/((gamma-1)*rhok + eps), driving
-    //! per-phase epsilonk and sosk to spurious large values that eventually NaN through
-    //! the Riemann flux. Empirically PETSC_SMALL (1e-20) is too low to suppress this,
-    //! while 1e-6 is well above any meaningful interface smearing on the meshes we care
-    //! about and orders of magnitude below physically resolved volume fractions.
     inline const static PetscReal ALPHAK_FLOOR = 1e-6;
 
    protected:

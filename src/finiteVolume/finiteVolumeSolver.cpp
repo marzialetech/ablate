@@ -226,8 +226,6 @@ PetscErrorCode ablate::finiteVolume::FiniteVolumeSolver::ComputeRHSFunction(Pets
         if (!discontinuousFluxFunctionDescriptions.empty()) {
             if (cellInterpolant == nullptr) {
                 cellInterpolant = std::make_unique<CellInterpolant>(subDomain, GetRegion(), faceGeomVec, cellGeomVec, maxlimit);
-                // Replay any slope-limiter activations that processes
-                // requested before cellInterpolant existed.
                 for (const auto& fieldName : pendingSlopeLimiterFields) {
                     cellInterpolant->GetSlopeLimiter().EnableForField(fieldName);
                 }

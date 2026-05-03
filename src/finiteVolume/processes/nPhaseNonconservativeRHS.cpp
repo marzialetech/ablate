@@ -37,12 +37,6 @@ void ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Setup(ablate::fi
     DMPlexGetHeightStratum(dm, 0, &cStart, &cEnd) >> utilities::PetscUtilities::checkError;  // Cells
     DMPlexGetHeightStratum(dm, 1, &fStart, &fEnd) >> utilities::PetscUtilities::checkError;  // Faces
 
-    // Build cell <-> face topology, keyed by raw DMPlex point index. We iterate the full
-    // height stratum (including ghost cells) here because DMPlexGetCone / DMPlexGetSupport
-    // are pure topology lookups that succeed on ghosts; only geometry / coordinate calls
-    // (DMPlexComputeCellGeometryFVM, etc.) trip on the missing cell type. Building the maps
-    // for ghosts too means a face whose support touches a real cell + a ghost cell still
-    // has a complete entry in faceToCells, which simplifies downstream lookups.
     cellToFaces.clear();
     faceToCells.clear();
     cellToFaces.reserve(cEnd - cStart);
@@ -83,19 +77,12 @@ static inline PetscReal MagVector(PetscInt dim, const PetscReal *in) {
 }
 
 void ablate::finiteVolume::processes::NPhaseNonconservativeRHS::ComputeBoundaryDistances() {
-    // Pure-topology BFS on cell adjacency. Distances are keyed by raw DMPlex cell index.
-    // A "boundary cell" here means any cell with at least one face whose support has size 1,
-    // which on a domain with GhostBoundaryCells corresponds to faces between a real cell and
-    // its ghost partner (the support shows only the real cell because the ghost's support is
-    // not symmetric in the pre-modifier topology). Either way the iteration uses raw indices
-    // throughout and never queries cell geometry, so it is safe on ghosts.
     cellBoundaryDistance.clear();
     cellBoundaryDistance.reserve(cEnd - cStart);
     for (PetscInt cell = cStart; cell < cEnd; ++cell) {
         cellBoundaryDistance[cell] = std::numeric_limits<PetscInt>::max();
     }
 
-    // First pass: mark boundary cells (distance = 0).
     for (PetscInt cell = cStart; cell < cEnd; ++cell) {
         const auto cellFacesIt = cellToFaces.find(cell);
         if (cellFacesIt == cellToFaces.end()) continue;
@@ -109,7 +96,6 @@ void ablate::finiteVolume::processes::NPhaseNonconservativeRHS::ComputeBoundaryD
         }
     }
 
-    // Iterative relaxation.
     bool changed;
     do {
         changed = false;
@@ -229,8 +215,6 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Comput
         nPhaseNonconservativeRHSProcess->ComputeBoundaryDistances();
     }
 
-    // Set per-process nPhases on every call - cheap, idempotent, and removes the older
-    // implicit dependency on cellValues being empty as a "first call" sentinel.
     nPhaseNonconservativeRHSProcess->nPhases = alphakField.numberComponents;
 
     auto& cellValues = nPhaseNonconservativeRHSProcess->cellValues;
@@ -238,9 +222,6 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Comput
     const auto& faceToCells = nPhaseNonconservativeRHSProcess->faceToCells;
     auto& cellBoundaryDistance = nPhaseNonconservativeRHSProcess->cellBoundaryDistance;
 
-    // Pass 1 - load cell values for every real cell. Iterate via cellRange.GetPoint(c) so
-    // ghost cells (which have no valid geometry / cell type) are excluded by the solver,
-    // matching the convention used in nPhaseAllaireAdvection and the rest of ablate's FV stack.
     for (PetscInt c = cellRange.start; c < cellRange.end; ++c) {
         const PetscInt cell = cellRange.GetPoint(c);
         auto& cellVal = cellValues[cell];
@@ -269,17 +250,12 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Comput
         cellVal.divU = 0.0;
     }
 
-    // Pass 2 - compute velocity divergence using the cached cell values.
     for (PetscInt c = cellRange.start; c < cellRange.end; ++c) {
         const PetscInt cell = cellRange.GetPoint(c);
         auto cellValIt = cellValues.find(cell);
         if (cellValIt == cellValues.end()) continue;
         auto& cellVal = cellValIt->second;
 
-        // Skip cells within 5 layers of the boundary - the central-difference style stencil
-        // below loses validity there because at least one face neighbor would be a ghost
-        // (never populated in cellValues). This is the same scope used in 1D, but now keyed
-        // by raw cell index so it is correct in 2D/3D too.
         const auto bdIt = cellBoundaryDistance.find(cell);
         if (bdIt != cellBoundaryDistance.end() && bdIt->second <= 5) {
             cellVal.divU = 0.0;
@@ -309,8 +285,6 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Comput
                 throw std::runtime_error("Face " + std::to_string(face) + " has " + std::to_string(cells.size()) + " cells, expected 2");
             }
 
-            // Pre-computed cell values for both adjacents. With the boundaryDistance>5 guard
-            // above, both should be real cells already populated by Pass 1; if not, skip.
             auto cellLIt = cellValues.find(cells[0]);
             auto cellRIt = cellValues.find(cells[1]);
             if (cellLIt == cellValues.end() || cellRIt == cellValues.end()) continue;
@@ -319,9 +293,6 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Comput
 
             PetscReal rho12 = 0.5 * (cellL.rho + cellR.rho);
 
-            // Wood's-rule mixture sound speed: 1/sos = sum_k alphak/sosk, skipping
-            // computationally-absent phases. Use the same ALPHAK_FLOOR as DecodeNPhase
-            // so we never divide by an absent-phase sosk that the decoder zeroed out.
             PetscReal sosL = 0.0, sosR = 0.0;
             for (PetscInt k = 0; k < nPhaseNonconservativeRHSProcess->nPhases; k++) {
                 if (cellL.alphak[k] > NPhaseFlowFields::ALPHAK_FLOOR && cellL.sosk[k] > 0.0) {
@@ -431,9 +402,6 @@ PetscErrorCode ablate::finiteVolume::processes::NPhaseNonconservativeRHS::Enforc
     PetscScalar *xArray;
     VecGetArray(locXVec, &xArray) >> utilities::PetscUtilities::checkError;
     
-    // Loop over all real cells (ghosts excluded by GetCellRangeWithoutGhost). Use
-    // cellRange.GetPoint(c) so this is correct on parallel / non-contiguous layouts where
-    // c != cell.
     for (PetscInt c = cellRange.start; c < cellRange.end; ++c) {
         const PetscInt cell = cellRange.GetPoint(c);
         PetscScalar *allFields = nullptr;

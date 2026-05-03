@@ -33,13 +33,6 @@ add_subdirectory(src)
 
 # find and load required libraries
 include(config/cmakeFunctions.cmake)
-# Optional dependency note:
-#   Kokkos, Zerork, and OpenCASCADE/EGADS are excluded here because (a) the source files
-#   that use them (kokkosUtilities.cpp, tChem*, eos/zerork.cpp, mathFunctions/geom/surface.cpp)
-#   are already commented out of their respective CMakeLists, and (b) all YAML inputs in
-#   the included test set use only finite-volume FV processes with explicit time
-#   integration on BoxMesh/Gmsh meshes, so none of these deps are exercised at runtime.
-#   Re-enable them if/when chemistry models or CAD-imported meshes come back into scope.
 # include(config/findKokkos.cmake)
 include(config/findYamlCpp.cmake)
 include(config/findChrestCompilerFlags.cmake)

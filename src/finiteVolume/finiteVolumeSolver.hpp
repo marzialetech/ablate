@@ -78,13 +78,6 @@ class FiniteVolumeSolver : public solver::CellSolver,
     //! Store a dm, vec and array for mesh characteristics specific to the fvm
     Vec meshCharacteristicsLocalVec = nullptr;
 
-    //! Set of field names (`domain::Field::name`) that processes (today only
-    //! NPhaseIntSharp) have opted into BJ slope limiting for. Cached here
-    //! because `cellInterpolant` (which owns the `SlopeLimiter`) is built
-    //! lazily inside `ComputeRHSFunction`, after `Process::Setup` runs. The
-    //! cache is replayed onto the limiter the moment cellInterpolant is
-    //! constructed; any subsequent `EnableSlopeLimiterFor` calls forward
-    //! directly to the live limiter.
     std::set<std::string> pendingSlopeLimiterFields;
 
    protected:
@@ -242,32 +235,10 @@ class FiniteVolumeSolver : public solver::CellSolver,
         vec = meshCharacteristicsLocalVec;
     }
 
-    /**
-     * Opt a field (by name) into BJ slope limiting / MUSCL face
-     * reconstruction. The single user-facing toggle (presence of
-     * `NPhaseIntSharp` in the YAML processes block) drives this through
-     * `NPhaseIntSharp::Setup`. Fields not registered here have their
-     * gradient zeroed inside `SlopeLimiter::ApplyLimiter`, which collapses
-     * downstream face reconstruction to donor-cell.
-     *
-     * Order-independent: may be called before `cellInterpolant` exists
-     * (during `Process::Setup`); the request is cached and replayed at
-     * lazy construction in `ComputeRHSFunction`.
-     */
     void EnableSlopeLimiterFor(const std::string& fieldName);
 
-    /**
-     * Read-only access to the cached set of fields that have been opted in
-     * via `EnableSlopeLimiterFor`. Primarily for diagnostics.
-     */
     [[nodiscard]] const std::set<std::string>& GetSlopeLimiterFields() const { return pendingSlopeLimiterFields; }
 
-    /**
-     * Pointer to the underlying CellInterpolant; null until lazy
-     * construction in `ComputeRHSFunction`. Provided so that
-     * `EnableSlopeLimiterFor` can forward to a live limiter when one
-     * exists.
-     */
     CellInterpolant* GetCellInterpolant() { return cellInterpolant.get(); }
 };
 }  // namespace ablate::finiteVolume

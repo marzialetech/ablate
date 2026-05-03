@@ -332,21 +332,11 @@ void ablate::finiteVolume::processes::SurfaceForce::Setup(ablate::finiteVolume::
     cellRange.start = cStart; cellRange.end = cEnd;
 
     // // PetscPrintf(PETSC_COMM_WORLD, "got cellrange: start=%d, end=%d\n", cellRange.start, cellRange.end);
-    // The Gaussian smoother stencil radius is ceil(C*N) cell layers (matches the
-    // runtime computation at line ~618). Build the cache at the correct depth so
-    // we don't iterate over cell IDs that the YAML didn't ask for; the previous
-    // hardcoded `layers=3` walked an extra cell ring relative to the dissertation's
-    // C=1, N=2.0 configuration and triggered a non-deterministic SEGV around
-    // t ~ 2.8e-4 when the slab72 lobe migrated past the slab corner (an ASLR
-    // sensitive 3rd-layer ghost-cell access). cellNeighbors1 is intentionally
-    // a separate 1-layer cache used by the sfmask propagation downstream and
-    // is left at its original depth.
     PetscInt cacheLayers = (PetscInt)PetscMax((PetscReal)1.0, PetscCeilReal(this->C * this->N));
     for (PetscInt i = cellRange.start; i < cellRange.end; ++i) {
         PetscInt cell = cellRange.GetPoint(i);
         // // PetscPrintf(PETSC_COMM_WORLD, "got cell \n");
         PetscInt nNeighbors, *neighbors, nNeighbors1, *neighbors1;
-        // DMPlexGetNeighbors(dm, cell, cacheLayers, 0, 0, PETSC_FALSE, PETSC_FALSE, &nNeighbors, &neighbors);
 
         DMPlexGetNeighbors(dm, cell, cacheLayers, 0, 0, PETSC_FALSE, PETSC_FALSE, &nNeighbors, &neighbors);
         cellNeighbors[cell] = std::vector<PetscInt>(neighbors, neighbors + nNeighbors);

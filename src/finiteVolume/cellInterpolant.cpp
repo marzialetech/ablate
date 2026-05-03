@@ -424,10 +424,6 @@ void ablate::finiteVolume::CellInterpolant::ComputeFieldGradients(const domain::
         }
     }
 
-    // Apply slope limiting to the gradients (in-house Barth-Jespersen). We
-    // pass the cell/face geometry vectors that PETSc has already populated
-    // for face reconstruction so the limiter uses the same centroids as the
-    // downstream MUSCL projection in ProjectToFace().
     slopeLimiter->ApplyLimiter(dm, dmGrad, dim, field, cellRange, cellGeomVec, faceGeomVec, xLocalArray, gradGlobArray);
 
     // Communicate gradient values

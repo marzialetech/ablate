@@ -1,13 +1,4 @@
 ---
-# we349: derived from slab72-we1000 by setting the leading-edge velocity scale
-# u0 = sqrt(5*We) m/s. We = 349 corresponds to u0 = 41.7732 m/s. Used together with
-# we126 and slab72-we1000 (the canonical We=1000 case) to reproduce dissertation
-# Fig. 4.11 (receding angle vs leading-edge Weber number).
-#
-# All numerics, mesh, BC topology, IC topology, sigma, integrator, dt, and
-# ts_max_time are identical to slab72-we1000; only the shearRate (and therefore
-# tau_adv = L_lobe / u0 = 0.01 / 41.7732 = 2.39e-4 s) differ.
-# See ../slab72-we1000/input.yaml for the full setup commentary.
 environment:
   title: slab2dcoords
   tagDirectory: false
@@ -21,15 +12,7 @@ arguments:
 timestepper:
   name: theMainTimeStepper
   arguments:
-    # Stability check: with dt=5e-8 the CFL ~ 0.1 and the surface-tension stability bound
-    # dt_st ~ sqrt(rho_paraffin*h^3/sigma) ~ 5e-5 is three orders of magnitude looser, so explicit Euler
-    # is safe.  RK2 was attempted as a margin-of-safety measure but doubles the SurfaceForce cost
-    # per step; we revert to Euler to keep wall-clock comparable to slab72-asis.
     ts_type: euler
-    # 1.4e-3 = 10 * tau_adv (where tau_adv = L_lobe / U_shear = 0.01/70.71 ~ 1.41e-4 s).
-    # Hard cap for Part 3 equilibration window; soft termination is performed in postproc
-    # via tools/postprocess_slab.py --detect-equilibrium (median-filtered range-of-theta
-    # < 0.5 deg over two consecutive 1*tau_adv windows after t >= 3*tau_adv).
     ts_max_time: 1.4e-3
     ts_dt: 5e-8
     ts_adapt_type: none
@@ -154,8 +137,6 @@ timestepper:
       dm_distribute: false
       dm_refine: 0
   initialization:
-    # volumeFraction = alpha_PerfectGas (air fraction); see ../slab72-we1000/input.yaml
-    # for the full level-set sign-convention discussion.
     - fieldName: volumeFraction
       field: !<!ablate::mathFunctions::Formula> &2
         formula: f1
@@ -386,7 +367,6 @@ solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
         fieldName: volumeFraction
         field: 1.0
     # ---- Slab boundary (under and beneath the slab): pure paraffin at rest ----
-    # This is the BC that was wrong in slab72-asis (it forced alpha=1 / airDensity here).
     - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
       boundaryName: euler_slab
       labelIds: [slabBoundaryCells]

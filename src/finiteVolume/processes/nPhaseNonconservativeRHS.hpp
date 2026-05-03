@@ -47,14 +47,6 @@ class NPhaseNonconservativeRHS : public Process {
     DM vertexDM{};
     std::shared_ptr<ablate::domain::SubDomain> subDomain;
 
-    // Topology and per-cell state, keyed by raw DMPlex point indices (cell or face).
-    //
-    // Originally these were std::vector<...> indexed by `cell - cStart` / `face - fStart`,
-    // which worked in 1D where cells were contiguous and there were no FVM ghost cells, but
-    // becomes brittle in 2D/3D and in parallel: ghost cells can appear at the end of the
-    // height stratum without a cell type, the regionMinusGhost label may not enumerate cells
-    // contiguously, and parallel partitioning can introduce gaps. Keying by raw point index
-    // keeps lookups O(1) on average and removes any assumption about layout.
     std::unordered_map<PetscInt, std::vector<PetscInt>> cellToFaces;  // raw cell -> faces
     std::unordered_map<PetscInt, std::vector<PetscInt>> faceToCells;  // raw face -> cells
     PetscInt cStart, cEnd;  // Cell range (raw stratum, includes ghosts; populated for topology only)
@@ -63,7 +55,6 @@ class NPhaseNonconservativeRHS : public Process {
     // Store pre-computed face values
     std::vector<FaceValues> faceValues;  // (unused; kept for ABI compatibility)
 
-    // Per-cell working state, keyed by raw cell index.
     std::unordered_map<PetscInt, CellValues> cellValues;
     std::unordered_map<PetscInt, PetscInt> cellBoundaryDistance;  // raw cell -> boundary distance
     PetscInt nPhases{0};  // Number of phases (set from alphakField.numberComponents on first RHS call)
@@ -100,8 +91,6 @@ class NPhaseNonconservativeRHS : public Process {
     }
 
    public:
-    /**
-     */
     explicit NPhaseNonconservativeRHS(double mInf, std::shared_ptr<ablate::finiteVolume::processes::PressureGradientScaling> pgs);
 
     /**
