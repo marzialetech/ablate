@@ -1,0 +1,150 @@
+---
+# SIDI 4-phase, 3 disks 120 deg apart + background.
+#
+# Static (quiescent) initially-diffuse-interface test, n-phase refactor of
+# the dissertation Sec. 2.1.2.3.1 / Sec. 2.2.1.1 SIDI bench. PM sharpening
+# only; no advection (zalesakTest is omitted, u=v=0 IC and BCs).
+#
+# Geometry: domain [0,1]^2, 200x200 grid (h=0.005). Three disks of radius
+# R=0.125 on a circle of radius d=0.27 about domain center (0.5,0.5), at
+# 90/210/330 deg. Background = phase 3.
+#
+# Initial alpha for each disk follows dissertation Eq. 2.19:
+#   alpha_k(r) = 0.5 * [ tanh((R+r_k)/(2*eps0)) + tanh((R-r_k)/(2*eps0)) ]
+# with r_k the radial distance from disk-k center and eps0 = 8h = 0.04
+# (8-cell-thick initial diffuse band, matches Sec. 2.2.1.1).
+#
+# Acceptance: eps_char(0)/h ~ 8 -> eps_char(tf)/h ~ O(1) (see
+# tools/sidi_thickness.py). Gamma=4e-2 baseline (Zalesak-validated).
+
+environment:
+  title: sidi-4phase-pm-g4e2
+  tagDirectory: true
+arguments: {}
+timestepper:
+  name: theMainTimeStepper
+  arguments:
+    ts_type: euler
+    ts_max_time: 1.0
+    ts_max_steps: 2000
+    ts_dt: 2.5e-5
+    ts_adapt_type: none
+  io: !<!ablate::io::Hdf5MultiFileSerializer>
+    interval: !<!ablate::io::interval::FixedInterval> 50
+  domain: !<!ablate::domain::BoxMesh>
+    name: sidiDomain
+    faces: [200, 200]
+    lower: [0.0, 0.0]
+    upper: [1.0, 1.0]
+    boundary: [NONE, NONE]
+    modifiers:
+      - !<!ablate::domain::modifiers::DistributeWithGhostCells>
+        ghostCellDepth: 2
+      - !<!ablate::domain::modifiers::GhostBoundaryCells>
+        labelName: ""
+    fields:
+      - !<!ablate::finiteVolume::NPhaseFlowFields>
+        eos: !<!ablate::eos::NPhase> &nPhaseEos
+          eosk:
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+      - {name: p,        location: AUX, type: FVM}
+      - {name: rho,      location: AUX, type: FVM}
+      - {name: rhok,     location: AUX, type: FVM, components: [rhok0, rhok1, rhok2, rhok3]}
+      - {name: tk,       location: AUX, type: FVM, components: [tk0, tk1, tk2, tk3]}
+      - {name: epsilonk, location: AUX, type: FVM, components: [epsilonk0, epsilonk1, epsilonk2, epsilonk3]}
+      - {name: sosk,     location: AUX, type: FVM, components: [sosk0, sosk1, sosk2, sosk3]}
+      - {name: debug,    location: AUX, type: FVM, components: [debug0, debug1, debug2, debug3]}
+  initialization:
+    - fieldName: alphak
+      field: !<!ablate::mathFunctions::Formula> &alphakInit
+        formula: c0, c1, c2, (1 - c0 - c1 - c2)
+        constants: &diskConstants
+          R:    0.125
+          eps0: 0.04
+          x0:   0.5
+          y0:   0.77
+          x1:   0.26617
+          y1:   0.365
+          x2:   0.73383
+          y2:   0.365
+        nested:
+          c0: !<!ablate::mathFunctions::Formula>
+            formula: "0.5*(tanh((R + sqrt((x-x0)^2 + (y-y0)^2))/(2*eps0)) + tanh((R - sqrt((x-x0)^2 + (y-y0)^2))/(2*eps0)))"
+            constants: *diskConstants
+          c1: !<!ablate::mathFunctions::Formula>
+            formula: "0.5*(tanh((R + sqrt((x-x1)^2 + (y-y1)^2))/(2*eps0)) + tanh((R - sqrt((x-x1)^2 + (y-y1)^2))/(2*eps0)))"
+            constants: *diskConstants
+          c2: !<!ablate::mathFunctions::Formula>
+            formula: "0.5*(tanh((R + sqrt((x-x2)^2 + (y-y2)^2))/(2*eps0)) + tanh((R - sqrt((x-x2)^2 + (y-y2)^2))/(2*eps0)))"
+            constants: *diskConstants
+    - fieldName: alphakrhok
+      field: !<!ablate::mathFunctions::Formula> &alphakrhokInit
+        formula: rho*c0, rho*c1, rho*c2, rho*(1 - c0 - c1 - c2)
+        constants: &phaseConstants
+          rho:  1.0
+          eps:  2.5
+          R:    0.125
+          eps0: 0.04
+          x0:   0.5
+          y0:   0.77
+          x1:   0.26617
+          y1:   0.365
+          x2:   0.73383
+          y2:   0.365
+        nested:
+          c0: !<!ablate::mathFunctions::Formula>
+            formula: "0.5*(tanh((R + sqrt((x-x0)^2 + (y-y0)^2))/(2*eps0)) + tanh((R - sqrt((x-x0)^2 + (y-y0)^2))/(2*eps0)))"
+            constants: *diskConstants
+          c1: !<!ablate::mathFunctions::Formula>
+            formula: "0.5*(tanh((R + sqrt((x-x1)^2 + (y-y1)^2))/(2*eps0)) + tanh((R - sqrt((x-x1)^2 + (y-y1)^2))/(2*eps0)))"
+            constants: *diskConstants
+          c2: !<!ablate::mathFunctions::Formula>
+            formula: "0.5*(tanh((R + sqrt((x-x2)^2 + (y-y2)^2))/(2*eps0)) + tanh((R - sqrt((x-x2)^2 + (y-y2)^2))/(2*eps0)))"
+            constants: *diskConstants
+    - fieldName: allaire
+      field: !<!ablate::mathFunctions::Formula> &allaireInit
+        formula: rho*eps, 0, 0
+        constants: *phaseConstants
+solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
+  id: sidi4phase
+  processes:
+    - !<!ablate::finiteVolume::processes::NPhaseAllaireAdvection>
+      eos: *nPhaseEos
+      fluxCalculatorNStiff: !<!ablate::finiteVolume::fluxCalculator::AusmpUp>
+        mInf: 0.3
+    - !<!ablate::finiteVolume::processes::NPhaseNonconservativeRHS>
+      mInf: 0.3
+    - !<!ablate::finiteVolume::processes::NPhaseIntSharp>
+      Gammak:        [4.0e-2, 4.0e-2, 4.0e-2, 4.0e-2]
+      epsilonk:      [0.005, 0.005, 0.005, 0.005]
+      flipPhiTildek: [0, 0, 0, 0]
+      boundaryLayerMultiplier: 3.0
+  boundaryConditions:
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: allaire walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: allaire
+        field: *allaireInit
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphakrhok walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: alphakrhok
+        field: *alphakrhokInit
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphak walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: alphak
+        field: *alphakInit
+  monitors:
+    - !<!ablate::monitors::TimeStepMonitor>
+      interval: 100

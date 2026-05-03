@@ -3,7 +3,7 @@ target_sources(ablateLibrary
         geometry.cpp
         sphere.cpp
         box.cpp
-        surface.cpp
+        # surface.cpp  # disabled: depends on EGADS/OpenCASCADE; see root CMakeLists note
         cylinderShell.cpp
         cylinder.cpp
         union.cpp
@@ -16,7 +16,7 @@ target_sources(ablateLibrary
         geometry.hpp
         sphere.hpp
         box.hpp
-        surface.hpp
+        # surface.hpp  # disabled: depends on EGADS/OpenCASCADE
         cylinderShell.hpp
         cylinder.hpp
         union.hpp

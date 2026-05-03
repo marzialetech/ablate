@@ -54,3 +54,20 @@ cmake-build-*/
 
 # Backup files
 *.bak
+
+# Run outputs (keep YAML inputs, README, summary.json, key PNGs, MP4 in compare/;
+# everything else is big and reproducible from the commit + the input YAMLs)
+runs/**/*.hdf5
+runs/**/*.xmf
+runs/**/*.rst
+runs/**/run.log
+runs/**/nphase-zalesak-5phase_*/zplanA.yaml
+runs/**/nphase-zalesak-5phase_*/input.yaml
+runs/**/animation/frames/
+runs/**/animation/frames_context/
+runs/**/animation/frames_combined/
+
+# Postprocessing venv
+.venv-postproc/
+
+tools/__pycache__/

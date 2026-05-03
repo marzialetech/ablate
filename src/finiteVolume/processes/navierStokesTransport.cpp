@@ -7,6 +7,12 @@
 #include "utilities/mathUtilities.hpp"
 #include "utilities/petscUtilities.hpp"
 
+
+#define NOTE0EXIT(S, ...) {PetscFPrintf(MPI_COMM_WORLD, stderr,                                     \
+  "\x1b[1m(%s:%d, %s)\x1b[0m\n  \x1b[1m\x1b[90mexiting:\x1b[0m " S "\n",    \
+  __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__); PetscFinalize(); exit(0);}
+
+
 ablate::finiteVolume::processes::NavierStokesTransport::NavierStokesTransport(const std::shared_ptr<parameters::Parameters>& parametersIn, std::shared_ptr<eos::EOS> eosIn,
                                                                               std::shared_ptr<fluxCalculator::FluxCalculator> fluxCalculatorIn,
                                                                               std::shared_ptr<eos::transport::TransportModel> transportModelIn,
@@ -95,7 +101,7 @@ void ablate::finiteVolume::processes::NavierStokesTransport::Setup(ablate::finit
         flow.RegisterAuxFieldUpdate(UpdateAuxPressureField, &computePressureFunction, std::vector<std::string>{CompressibleFlowFields::PRESSURE_FIELD}, {});
     }
 }
-
+#include <signal.h>
 PetscErrorCode ablate::finiteVolume::processes::NavierStokesTransport::AdvectionFlux(PetscInt dim, const PetscFVFaceGeom* fg, const PetscInt* uOff, const PetscScalar* fieldL,
                                                                                      const PetscScalar* fieldR, const PetscInt* aOff, const PetscScalar* auxL, const PetscScalar* auxR,
                                                                                      PetscScalar* flux, void* ctx) {
@@ -468,7 +474,7 @@ PetscErrorCode ablate::finiteVolume::processes::NavierStokesTransport::Diffusion
     flowParameters->kFunction.function(field, aux[aOff[T]], &k, flowParameters->kFunction.context.get());
 
     // Compute the stress tensor tau
-    PetscReal tau[9];  // Maximum size without symmetry
+    PetscReal tau[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};  // Maximum size without symmetry
     PetscCall(CompressibleFlowComputeStressTensor(dim, mu, gradAux + aOff_x[VEL], tau));
 
     // for each velocity component
@@ -504,6 +510,7 @@ PetscErrorCode ablate::finiteVolume::processes::NavierStokesTransport::Diffusion
 
     // zero out the density flux
     flux[CompressibleFlowFields::RHO] = 0.0;
+
     PetscFunctionReturn(0);
 }
 

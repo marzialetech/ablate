@@ -1,13 +1,13 @@
 target_sources(ablateLibrary
         PRIVATE
-        sublimation.cpp
-        arbitrarySource.cpp
-        logLawBoundary.cpp
+        # sublimation.cpp
+        # arbitrarySource.cpp
+        # logLawBoundary.cpp
 
         PUBLIC
-        sublimation.hpp
-        arbitrarySource.hpp
-        logLawBoundary.hpp
+        # sublimation.hpp
+        # arbitrarySource.hpp
+        # logLawBoundary.hpp
 )
 
 add_subdirectory(subModels)

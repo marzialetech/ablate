@@ -1,52 +1,31 @@
 target_sources(ablateLibrary
         PRIVATE
-        fieldErrorMonitor.cpp
-        solutionErrorMonitor.cpp
+        # fieldErrorMonitor.cpp
+        # solutionErrorMonitor.cpp
         timeStepMonitor.cpp
-        ignitionDelayPeakYi.cpp
-        ignitionDelayTemperature.cpp
-        extractLineMonitor.cpp
-        dmViewFromOptions.cpp
-        particleCount.cpp
-        particleAverage.cpp
+        # ignitionDelayPeakYi.cpp
+        # ignitionDelayTemperature.cpp
+        # extractLineMonitor.cpp
+        # dmViewFromOptions.cpp
+        # particleCount.cpp
+        # particleAverage.cpp
         curveMonitor.cpp
-        maxMinAverage.cpp
-        physicsTimeStep.cpp
-        probes.cpp
-        rocketMonitor.cpp
-        turbFlowStats.cpp
-        boundarySolverMonitor.cpp
-        fieldMonitor.cpp
-        mixtureFractionMonitor.cpp
-        mixtureFractionCalculator.cpp
-        radiationFieldMonitor.cpp
-        radiationFlux.cpp
-        chemTabMonitor.cpp
+        # maxMinAverage.cpp
+        # physicsTimeStep.cpp
+        # probes.cpp
+        # rocketMonitor.cpp
+        # turbFlowStats.cpp
+        # boundarySolverMonitor.cpp
+        # fieldMonitor.cpp
+        # mixtureFractionMonitor.cpp
+        # mixtureFractionCalculator.cpp
+        # radiationFieldMonitor.cpp
+        # radiationFlux.cpp
+        # chemTabMonitor.cpp
 
         PUBLIC
         monitor.hpp
-        fieldErrorMonitor.hpp
-        solutionErrorMonitor.hpp
         timeStepMonitor.hpp
-        ignitionDelayPeakYi.hpp
-        ignitionDelayTemperature.hpp
-        extractLineMonitor.hpp
-        dmViewFromOptions.hpp
-        particleCount.hpp
-        particleAverage.hpp
-        curveMonitor.hpp
-        maxMinAverage.hpp
-        physicsTimeStep.hpp
-        probes.hpp
-        rocketMonitor.hpp
-        turbFlowStats.hpp
-        fieldMonitor.hpp
-        mixtureFractionMonitor.hpp
-        boundarySolverMonitor.hpp
-        mixtureFractionCalculator.hpp
-        radiationFieldMonitor.hpp
-        radiationFlux.hpp
-        chemTabMonitor.hpp
         )
 
 add_subdirectory(logs)

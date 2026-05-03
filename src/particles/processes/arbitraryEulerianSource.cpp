@@ -2,6 +2,7 @@
 #include "particles/particleSolver.hpp"
 
 #include <utility>
+#include <vector>
 
 ablate::particles::processes::ArbitraryEulerianSource::ArbitraryEulerianSource(std::string coupledFieldName, std::shared_ptr<mathFunctions::MathFunction> sourceFunction)
     : coupledFieldName(std::move(coupledFieldName)), sourceFunction(std::move(sourceFunction)) {}
@@ -20,11 +21,11 @@ void ablate::particles::processes::ArbitraryEulerianSource::ComputeEulerianSourc
     auto context = sourceFunction->GetContext();
 
     // Store the result in a scratch variable
-    PetscReal sourceValues[source.numberComponents];
+    std::vector<PetscReal> sourceValues(source.numberComponents);
 
     // Compute the function
     for (PetscInt p = 0; p < np; ++p) {
-        function(coordinates.numberComponents, startTime, coordinates[p], source.numberComponents, sourceValues, context) >> utilities::PetscUtilities::checkError;
+        function(coordinates.numberComponents, startTime, coordinates[p], source.numberComponents, sourceValues.data(), context) >> utilities::PetscUtilities::checkError;
 
         // add to the source accessor and multiply by dt
         for (PetscInt c = 0; c < source.numberComponents; ++c) {

@@ -76,11 +76,11 @@ DM ablate::domain::MeshGenerator::CreateDM(const std::string& name, const std::s
     DMSetUp(dm) >> utilities::PetscUtilities::checkError;
 
     // Size up a buffer for the cone
-    PetscInt cone[maxConeSize];
+    std::vector<PetscInt> cone(maxConeSize);
 
     // Compute and set the cone for each cell
     for (PetscInt c = 0; c < numCells; ++c) {
-        description->BuildTopology(c, cone);
+        description->BuildTopology(c, cone.data());
 
         // Offset the cone from the number of numVertices
         for (auto& node : cone) {
@@ -88,7 +88,7 @@ DM ablate::domain::MeshGenerator::CreateDM(const std::string& name, const std::s
         }
 
         auto cellType = description->GetCellType(c);
-        DMPlexSetCone(dm, c, cone) >> utilities::PetscUtilities::checkError;
+        DMPlexSetCone(dm, c, cone.data()) >> utilities::PetscUtilities::checkError;
         DMPlexSetCellType(dm, c, cellType) >> utilities::PetscUtilities::checkError;
     }
     DMPlexSymmetrize(dm) >> utilities::PetscUtilities::checkError;

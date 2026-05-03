@@ -33,17 +33,24 @@ add_subdirectory(src)
 
 # find and load required libraries
 include(config/cmakeFunctions.cmake)
-include(config/findKokkos.cmake)
+# Optional dependency note:
+#   Kokkos, Zerork, and OpenCASCADE/EGADS are excluded here because (a) the source files
+#   that use them (kokkosUtilities.cpp, tChem*, eos/zerork.cpp, mathFunctions/geom/surface.cpp)
+#   are already commented out of their respective CMakeLists, and (b) all YAML inputs in
+#   the included test set use only finite-volume FV processes with explicit time
+#   integration on BoxMesh/Gmsh meshes, so none of these deps are exercised at runtime.
+#   Re-enable them if/when chemistry models or CAD-imported meshes come back into scope.
+# include(config/findKokkos.cmake)
 include(config/findYamlCpp.cmake)
 include(config/findChrestCompilerFlags.cmake)
 include(config/findCppParser.cmake)
 include(config/findMuParser.cmake)
 include(config/findXdmfGenerator.cmake)
-include(config/findTChem.cmake)
-include(config/findZerork.cmake)
+#include(config/findTChem.cmake)
+# include(config/findZerork.cmake)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
-include(config/findOpenCascade.cmake)
+# include(config/findOpenCascade.cmake)
 include(config/findJson.cmake)
 include(config/findTensorFlow.cmake)
 include(config/findSLEPc.cmake)
@@ -59,12 +66,12 @@ target_link_libraries(ablateLibrary
         yaml-cpp
         muparser
         CHREST::xdmfGeneratorLibrary
-        TChem::tchem
-        Tines::tines
+       # TChem::tchem
+       # Tines::tines
         Threads::Threads
         nlohmann_json::nlohmann_json
         ${HDF5_LIBRARIES}
-        ZERORK::zerork_cfd_plugin
+        # ZERORK::zerork_cfd_plugin  # disabled with findZerork.cmake (see note above)
         PRIVATE
         chrestCompilerFlags)
 

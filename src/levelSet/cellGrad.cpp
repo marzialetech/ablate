@@ -1,5 +1,6 @@
 #include <petsc.h>
 #include <petscblaslapack.h>
+#include <vector>
 
 // Note about the gradient calculations: These use a Taylor-Series expansion about the point-of-interest.
 //  For triangles(2D) or tets(3D) this is a well-defined linear system.
@@ -70,11 +71,11 @@ PetscErrorCode Grad_2D_Quad(const PetscReal x0[], const PetscReal coords[], cons
     PetscReal x[4] = {c[0], c[1], c[2], c[3]};
     char transpose = 'N';
     PetscBLASInt m = 4, n = 3, nrhs = 1, info, worksize = m * n;
-    PetscReal work[m * n];
+    std::vector<PetscReal> work(m * n);
 
     PetscFunctionBegin;
 
-    PetscCallBLAS("LAPACKgels", LAPACKgels_(&transpose, &m, &n, &nrhs, A, &m, x, &m, work, &worksize, &info));
+    PetscCallBLAS("LAPACKgels", LAPACKgels_(&transpose, &m, &n, &nrhs, A, &m, x, &m, work.data(), &worksize, &info));
     PetscCheck(info == 0, PETSC_COMM_SELF, PETSC_ERR_LIB, "Bad argument to GELS");
 
     if (c0) *c0 = x[0];
@@ -145,7 +146,7 @@ PetscErrorCode Grad_3D_Hex(const PetscReal x0[], const PetscReal coords[], const
     PetscReal A[32], x[8];
     char transpose = 'N';
     PetscBLASInt m = 8, n = 4, nrhs = 1, info, worksize = m * n;
-    PetscReal work[m * n];
+    std::vector<PetscReal> work(m * n);
 
     PetscFunctionBegin;
 
@@ -157,7 +158,7 @@ PetscErrorCode Grad_3D_Hex(const PetscReal x0[], const PetscReal coords[], const
         A[i + 24] = coords[i * 3 + 2] - x0[2];
     }
 
-    PetscCallBLAS("LAPACKgels", LAPACKgels_(&transpose, &m, &n, &nrhs, A, &m, x, &m, work, &worksize, &info));
+    PetscCallBLAS("LAPACKgels", LAPACKgels_(&transpose, &m, &n, &nrhs, A, &m, x, &m, work.data(), &worksize, &info));
     PetscCheck(info == 0, PETSC_COMM_SELF, PETSC_ERR_LIB, "Bad argument to GELS");
 
     if (c0) *c0 = x[0];

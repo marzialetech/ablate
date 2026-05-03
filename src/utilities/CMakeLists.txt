@@ -4,7 +4,7 @@ target_sources(ablateLibrary
         demangler.cpp
         petscUtilities.cpp
         petscSupport.cpp
-        kokkosUtilities.cpp
+        # kokkosUtilities.cpp
         mpiUtilities.cpp
 
         PUBLIC
@@ -15,7 +15,7 @@ target_sources(ablateLibrary
         vectorUtilities.hpp
         petscUtilities.hpp
         petscSupport.hpp
-        kokkosUtilities.hpp
+        # kokkosUtilities.hpp
         mpiUtilities.hpp
         temporaryWorkingDirectory.hpp
         constants.hpp

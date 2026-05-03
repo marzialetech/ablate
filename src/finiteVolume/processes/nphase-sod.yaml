@@ -1,0 +1,134 @@
+environment:
+  title: nphase-sod-water-air
+  tagDirectory: true
+
+arguments:
+  dm_plex_gmsh_use_regions: true
+  dm_plex_check_all: true
+
+timestepper:
+  name: theMainTimeStepper
+  arguments:
+    ts_type: euler
+    ts_max_time: 2.5e-4
+    ts_dt: 1e-7
+    ts_adapt_type: none
+
+#  io: !<!ablate::io::Hdf5MultiFileSerializer>
+#    interval: !<!ablate::io::interval::FixedInterval> 1
+
+  domain: !<!ablate::domain::BoxMesh> &1
+    name: testMesh
+    faces: [100]
+    lower: [0.0]
+    upper: [1.0]
+    boundary: [NONE]
+    modifiers:
+      - !<!ablate::domain::modifiers::DistributeWithGhostCells>
+        ghostCellDepth: 2
+      - !<!ablate::domain::modifiers::GhostBoundaryCells>
+        labelName: ""
+    fields:
+      - !<!ablate::finiteVolume::NPhaseFlowFields>
+        eos: !<!ablate::eos::NPhase> &eos
+          eosk:
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters:
+                gamma: 4.4
+                Cp: 4186.0
+                p0: 6e8
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters:
+                gamma: 1.4
+                Cp: 1004.5
+                p0: 0.0
+        conservedFieldOptions:
+          petscfv_type: leastsquares
+          petscfv_compute_gradients: true
+      - name: p
+        location: AUX
+        type: FVM  
+      - name: rhok
+        location: AUX
+        type: FVM
+        components: [rhok0, rhok1]
+      - name: tk
+        location: AUX
+        type: FVM
+        components: [tk0, tk1]
+      - name: epsilonk
+        location: AUX
+        type: FVM
+        components: [epsilonk0, epsilonk1]
+      - name: rho
+        location: AUX
+        type: FVM
+      - name: sosk
+        location: AUX
+        type: FVM
+        components: [sosk0, sosk1]
+      - name: debug
+        location: AUX
+        type: FVM
+        components: [debug0, debug1]
+
+  initialization:
+    - fieldName: allaire
+      field: !<!ablate::mathFunctions::Formula> &allaireInit
+        formula: "rho1*(eps1 + u*u/2)*(interface) + rho2*(eps2 + u*u/2)*(1-interface), 0"
+        constants: &constants
+          rho1: 1000
+          rho2: 10
+          eps2: 25000
+          eps1: 1070588.23529411764705882352941176470588235
+          u: 0
+        nested:
+          interface: !<!ablate::mathFunctions::Formula> &interface
+            formula: "x - 0.75 < 0 ? 1 : 0"
+    - fieldName: alphakrhok
+      field: !<!ablate::mathFunctions::Formula> &alphakrhokInit
+        formula: "rho1*(interface), rho2*(1-interface)"
+        constants: *constants
+        nested:
+          interface: *interface
+    - fieldName: alphak
+      field: !<!ablate::mathFunctions::Formula> &alphakInit
+        formula: "interface, (1-interface)"
+        nested:
+          interface: *interface
+
+solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
+  id: nPhase Problem
+  processes:
+    - !<!ablate::finiteVolume::processes::NPhaseAllaireAdvection>
+      eos: *eos
+      fluxCalculatorNStiff: !<!ablate::finiteVolume::fluxCalculator::AusmpUp>
+        mInf: 0.3
+    - !<!ablate::finiteVolume::processes::NPhaseNonconservativeRHS>
+      mInf: 0.3
+
+  boundaryConditions:
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: allaire walls
+      labelIds: [1, 2]  
+      boundaryValue:
+        fieldName: allaire
+        field: *allaireInit
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphakrhok walls
+      labelIds: [1, 2]
+      boundaryValue:
+        fieldName: alphakrhok
+        field: *alphakrhokInit
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphak walls
+      labelIds: [1, 2]
+      boundaryValue:
+        fieldName: alphak
+        field: *alphakInit
+
+  monitors:
+    - !<!ablate::monitors::TimeStepMonitor>
+      interval: 1
+    - !<!ablate::monitors::CurveMonitor>
+      interval: 100

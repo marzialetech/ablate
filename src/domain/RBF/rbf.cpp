@@ -1,5 +1,6 @@
 #include "rbf.hpp"
 #include <petsc/private/dmpleximpl.h>
+#include <vector>
 #include "utilities/petscSupport.hpp"
 
 using namespace ablate::domain::rbf;
@@ -135,7 +136,7 @@ void RBF::Matrix(const PetscInt c) {
     const PetscInt numPoly = RBF::nPoly, p = RBF::polyOrder, p1 = PetscMax(p + 1, 1);
     Mat A;
     PetscReal *x, *vals;
-    PetscReal x0[dim];  // Center of the cell of interest
+    std::vector<PetscReal> x0(dim);  // Center of the cell of interest
     PetscReal *xp;      // Powers of the cell centers
     const DM dm = RBF::subDomain->GetSubDM();
 
@@ -150,7 +151,7 @@ void RBF::Matrix(const PetscInt c) {
     PetscMalloc1(nCells * dim * p1, &xp) >> utilities::PetscUtilities::checkError;
 
     // Get the cell center
-    DMPlexComputeCellGeometryFVM(dm, c, NULL, x0, NULL) >> utilities::PetscUtilities::checkError;
+    DMPlexComputeCellGeometryFVM(dm, c, NULL, x0.data(), NULL) >> utilities::PetscUtilities::checkError;
 
     // Shifted cell-centers of neighbor cells
     PetscMalloc1(nCells * dim, &x);

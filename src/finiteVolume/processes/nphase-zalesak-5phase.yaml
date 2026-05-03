@@ -1,0 +1,198 @@
+---
+# 5-phase Zalesak slotted-disk advection test.
+#
+# Four disks of four distinct phases (k=0..3) revolve about the domain center against a
+# fifth background phase (k=4). Each disk has a radial slot oriented inward toward the
+# rotation center, so the pattern is rotationally symmetric (the four disks are 90 degrees
+# apart in both position and notch orientation).
+#
+# Geometry (matches Downloads/.../runs_ablate/zalesak-50.yaml's 4-disk setup but with each
+# disk assigned its own phase rather than all being VOF=1 of a single phase):
+#   k=0 disk: center (0.5, 0.75), notch in strip x in [0.475, 0.525], y <= 0.80
+#   k=1 disk: center (0.25, 0.5), notch in strip y in [0.475, 0.525], x <= 0.20  (wait: x >= 0.20 inside disk; notch goes inward so x <= 0.20 carves OUT)
+#   k=2 disk: center (0.75, 0.5), notch in strip y in [0.475, 0.525], x >= 0.80
+#   k=3 disk: center (0.5, 0.25), notch in strip x in [0.475, 0.525], y <= 0.20
+#   k=4 background: 1 everywhere except inside any disk
+#
+# All five phases use the same KthStiffenedGas EOS (gamma=1.4, Cp=1004.5, p0=0) so this
+# behaves as a passive multi-tracer rotational advection test. NPhaseIntSharp keeps the
+# four interfaces (each disk vs. background) sharp.
+#
+# Smoke-test deck for the NPhaseIntSharp process: confirms it compiles, finds the
+# registered fsharpk aux field, survives the ghost-cell DMPlex iteration in
+# ComputeBoundaryInformation, and produces nonzero fsharpk values in interfacial
+# cells for all four disk-vs-background interfaces.
+
+environment:
+  title: nphase-zalesak-5phase
+  tagDirectory: true
+arguments: {}
+timestepper:
+  name: theMainTimeStepper
+  arguments:
+    # Plan A (full rotation): one full revolution about (0.5, 0.5) at omega=30
+    # (hardcoded inside NPhaseAllaireAdvection::ZalesakTestSourceTerm). With
+    # Gammak=5e-3 and the ALPHAK_FLOOR=1e-6 EOS-decode clamp, the run is stable for
+    # at least the first quarter (verified empirically; sum(alpha) drift ~1e-11,
+    # 100% finite cells, monotonic interface sharpening up to 23.8% reduction in
+    # diffuse-band cell count vs the no-intsharp control). CFL = 15 * 1e-4 / (1/200)
+    # = 0.30. Full rotation = 2*pi/30 ~= 0.2094395s, i.e. 2094 steps at dt=1e-4.
+    # HDF5 every 50 steps => ~42 frames at ~36 MB each (~1.5 GB per run).
+    ts_type: euler
+    ts_max_time: 0.20943951023931953  # 2*pi / 30 = full rotation
+    ts_max_steps: 2094
+    ts_dt: 1e-4
+    ts_adapt_type: none
+  io: !<!ablate::io::Hdf5MultiFileSerializer>
+    interval: !<!ablate::io::interval::FixedInterval> 50
+  domain: !<!ablate::domain::BoxMesh>
+    name: nphaseZalesakDomain
+    faces: [200, 200]
+    lower: [0.0, 0.0]
+    upper: [1.0, 1.0]
+    boundary: [NONE, NONE]
+    modifiers:
+      - !<!ablate::domain::modifiers::DistributeWithGhostCells>
+        ghostCellDepth: 2
+      - !<!ablate::domain::modifiers::GhostBoundaryCells>
+        labelName: ""
+    fields:
+      - !<!ablate::finiteVolume::NPhaseFlowFields>
+        eos: !<!ablate::eos::NPhase> &nPhaseEos
+          eosk:
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+      - {name: p,        location: AUX, type: FVM}
+      - {name: rho,      location: AUX, type: FVM}
+      - {name: rhok,     location: AUX, type: FVM, components: [rhok0, rhok1, rhok2, rhok3, rhok4]}
+      - {name: tk,       location: AUX, type: FVM, components: [tk0, tk1, tk2, tk3, tk4]}
+      - {name: epsilonk, location: AUX, type: FVM, components: [epsilonk0, epsilonk1, epsilonk2, epsilonk3, epsilonk4]}
+      - {name: sosk,     location: AUX, type: FVM, components: [sosk0, sosk1, sosk2, sosk3, sosk4]}
+      # Per-phase diagnostic field written by NPhaseNonconservativeRHS at each step.
+      # Must have >= nPhases components, otherwise that process throws.
+      - {name: debug,    location: AUX, type: FVM, components: [debug0, debug1, debug2, debug3, debug4]}
+  initialization:
+    # Sharp indicator for each slotted disk. c_k = 1 inside disk k (with its notch
+    # carved out), 0 elsewhere. Disks are non-overlapping so sum_k c_k <= 1 everywhere.
+    - fieldName: alphak
+      field: !<!ablate::mathFunctions::Formula> &alphakInit
+        formula: c0, c1, c2, c3, (1 - c0 - c1 - c2 - c3)
+        nested:
+          # Top disk (k=0): center (0.5, 0.75); notch carved in strip x in [0.475, 0.525], y <= 0.80
+          # muparser has no unary `!`; rewrite "in_disk && !notch" via de Morgan as
+          # "in_disk && (not_strip_x || not_strip_y)".
+          c0: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.75)^2) < 0.15) && (x < 0.475 || x > 0.525 || y > 0.80) ? 1 : 0"
+          # Left disk (k=1): center (0.25, 0.5); notch in strip y in [0.475, 0.525], x >= 0.20
+          c1: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.25)^2 + (y-0.5)^2) < 0.15) && (y < 0.475 || y > 0.525 || x < 0.20) ? 1 : 0"
+          # Right disk (k=2): center (0.75, 0.5); notch in strip y in [0.475, 0.525], x <= 0.80
+          c2: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.75)^2 + (y-0.5)^2) < 0.15) && (y < 0.475 || y > 0.525 || x > 0.80) ? 1 : 0"
+          # Bottom disk (k=3): center (0.5, 0.25); notch in strip x in [0.475, 0.525], y >= 0.20
+          c3: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.25)^2) < 0.15) && (x < 0.475 || x > 0.525 || y < 0.20) ? 1 : 0"
+    - fieldName: alphakrhok
+      field: !<!ablate::mathFunctions::Formula> &alphakrhokInit
+        # All five phases have the same density rho=1.0, so alphakrhok = alphak * 1.0.
+        formula: rho*c0, rho*c1, rho*c2, rho*c3, rho*(1 - c0 - c1 - c2 - c3)
+        constants: &phaseConstants
+          rho: 1.0
+          eps: 2.5
+          # omega must match the hardcoded value in
+          # NPhaseAllaireAdvection::ZalesakTestSourceTerm (currently 30.0). Otherwise the
+          # initial velocity disagrees with the source-term-imposed velocity at t=0 and
+          # the disks pulse before settling onto the rotational field.
+          omega: 30.0  # angular velocity (rad/s) about (0.5, 0.5)
+        nested:
+          c0: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.75)^2) < 0.15) && (x < 0.475 || x > 0.525 || y > 0.80) ? 1 : 0"
+          c1: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.25)^2 + (y-0.5)^2) < 0.15) && (y < 0.475 || y > 0.525 || x < 0.20) ? 1 : 0"
+          c2: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.75)^2 + (y-0.5)^2) < 0.15) && (y < 0.475 || y > 0.525 || x > 0.80) ? 1 : 0"
+          c3: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.25)^2) < 0.15) && (x < 0.475 || x > 0.525 || y < 0.20) ? 1 : 0"
+    - fieldName: allaire
+      # allaire = [rhoe, rhou, rhov] where rho = sum_k alphak*rhok = 1.0 (uniform).
+      # u = -omega*(y - 0.5), v = +omega*(x - 0.5) gives counter-clockwise rotation.
+      field: !<!ablate::mathFunctions::Formula>
+        formula: rho*(eps + 0.5*(u*u + v*v)), rho*u, rho*v
+        constants: *phaseConstants
+        nested:
+          u: !<!ablate::mathFunctions::Formula>
+            formula: "-omega*(y - 0.5)"
+            constants: *phaseConstants
+          v: !<!ablate::mathFunctions::Formula>
+            formula: "omega*(x - 0.5)"
+            constants: *phaseConstants
+solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
+  id: nPhaseZalesak
+  processes:
+    - !<!ablate::finiteVolume::processes::NPhaseAllaireAdvection>
+      eos: *nPhaseEos
+      # zalesakTest=true engages NPhaseAllaireAdvection::ZalesakTestSourceTerm, which
+      # forces every cell's momentum onto the rotational field every step. Without it
+      # AusmpUp produces near-zero flux for this uniform-pressure passive-tracer setup
+      # and the disks never advect (verified empirically on the omega=1, dt=1e-3 run).
+      parameters:
+        zalesakTest: true
+      fluxCalculatorNStiff: !<!ablate::finiteVolume::fluxCalculator::AusmpUp>
+        mInf: 0.3
+    - !<!ablate::finiteVolume::processes::NPhaseNonconservativeRHS>
+      mInf: 0.3
+    # NPhaseIntSharp smoke check: must (a) load, (b) find the registered fsharpk aux
+    # field, (c) survive ComputeBoundaryInformation on a 2D mesh with GhostBoundaryCells,
+    # and (d) produce nonzero fsharpk values in interfacial cells for all four
+    # disk-vs-background interfaces.
+    - !<!ablate::finiteVolume::processes::NPhaseIntSharp>
+      # Gammak carries the per-RK-stage magnitude of the interface-sharpening update
+      # (fsharpk is added directly to alphak inside PreStage; the hardcoded dt=1e-4 the
+      # earlier code multiplied by was removed and "absorbed into Gammak" per the
+      # original abstraction). With Gammak=1.0 the per-stage delta on alphak is O(0.1),
+      # which oversharpens within ~150 steps and NaN's the run; Gammak=1e-3 gives
+      # O(1e-4) per stage, comparable to the historical (Gammak=1, dt=1e-4) recipe and
+      # well below the alphak in [0,1] floor. Tune up only after verifying smoothness.
+      Gammak:        [5.0e-3, 5.0e-3, 5.0e-3, 5.0e-3, 5.0e-3]
+      epsilonk:      [0.005, 0.005, 0.005, 0.005, 0.005]
+      flipPhiTildek: [0, 0, 0, 0, 0]
+      boundaryLayerMultiplier: 3.0
+  boundaryConditions:
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: allaire walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: allaire
+        field: !<!ablate::mathFunctions::Formula>
+          formula: rho*(eps + 0.5*(u*u + v*v)), rho*u, rho*v
+          constants: *phaseConstants
+          nested:
+            u: !<!ablate::mathFunctions::Formula>
+              formula: "-omega*(y - 0.5)"
+              constants: *phaseConstants
+            v: !<!ablate::mathFunctions::Formula>
+              formula: "omega*(x - 0.5)"
+              constants: *phaseConstants
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphakrhok walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: alphakrhok
+        field: *alphakrhokInit
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphak walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: alphak
+        field: *alphakInit
+  monitors:
+    - !<!ablate::monitors::TimeStepMonitor>
+      interval: 100

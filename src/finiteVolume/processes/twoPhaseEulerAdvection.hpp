@@ -9,6 +9,20 @@
 #include "finiteVolume/fluxCalculator/fluxCalculator.hpp"
 #include "process.hpp"
 
+// #include "finiteVolume/process.hpp"
+#include <memory>
+#include <vector>
+#include "domain/range.hpp"
+#include "eos/eos.hpp"
+#include "parameters/parameters.hpp"
+#include "finiteVolume/finiteVolumeSolver.hpp"
+#include "domain/field.hpp"
+#include "domain/region.hpp"
+#include "domain/subDomain.hpp"
+#include "utilities/petscUtilities.hpp"
+#include "finiteVolume/processes/intSharp.hpp"
+#include "finiteVolume/stencils/gaussianConvolution.hpp"
+
 namespace ablate::finiteVolume::processes {
 
 class TwoPhaseEulerAdvection : public Process {
@@ -16,23 +30,49 @@ class TwoPhaseEulerAdvection : public Process {
     inline const static std::string VOLUME_FRACTION_FIELD = eos::TwoPhase::VF;
     inline const static std::string DENSITY_VF_FIELD = ablate::finiteVolume::CompressibleFlowFields::CONSERVED + VOLUME_FRACTION_FIELD;
 
+
+    /**
+     * General two phase decoder interface
+     */
+    //i moved this from the private section to the public section so that it can be used in the IntSharp process
+    class TwoPhaseDecoder {
+        public:
+         virtual void DecodeTwoPhaseEulerState(PetscInt dim, const PetscInt *uOff, const PetscReal *conservedValues, const PetscReal *normal, PetscReal *density, PetscReal *densityG,
+                                               PetscReal *densityL, PetscReal *normalVelocity, PetscReal *velocity, PetscReal *internalEnergy, PetscReal *internalEnergyG, PetscReal *internalEnergyL,
+                                               PetscReal *aG, PetscReal *aL, PetscReal *MG, PetscReal *ML, PetscReal *p, PetscReal *T, PetscReal *alpha) = 0;
+         virtual ~TwoPhaseDecoder() = default;
+     };
+     
+
     struct TimeStepData {
         PetscReal cfl;
         eos::ThermodynamicFunction computeSpeedOfSound;
     };
     TimeStepData timeStepData;
 
+    // Vortex test parameters
+    bool vortexTest = false;
+    PetscReal T_kothe = 2.0;
+    PetscReal T_cycle = 0.02;
+    PetscReal pi = 3.14159265358;
+
+    // Zalesak test flag
+    bool zalesakTest = false;
+
    private:
+    // Add a member variable for IntSharp
+    // std::shared_ptr<ablate::finiteVolume::processes::IntSharp> intSharpProcess;
+
     struct DecodeDataStructGas {
-        PetscReal etot;
-        PetscReal rhotot;
+        PetscReal internalEnergy;
+        PetscReal density;
         PetscReal Yg;
         PetscReal Yl;
-        PetscReal gam1;
-        PetscReal gam2;
-        PetscReal cvg;
-        PetscReal cpl;
-        PetscReal p0l;
+        PetscReal gamG;
+        PetscReal gamL;
+        PetscReal cvG;
+        PetscReal cpL;
+        PetscReal p0L;
     };
     struct DecodeDataStructStiff {
         PetscReal etot;
@@ -52,16 +92,6 @@ class TwoPhaseEulerAdvection : public Process {
     static PetscErrorCode FormJacobianStiff(SNES snes, Vec x, Mat J, Mat P, void *ctx);
 
     PetscErrorCode MultiphaseFlowPreStage(TS flowTs, ablate::solver::Solver &flow, PetscReal stagetime);
-    /**
-     * General two phase decoder interface
-     */
-    class TwoPhaseDecoder {
-       public:
-        virtual void DecodeTwoPhaseEulerState(PetscInt dim, const PetscInt *uOff, const PetscReal *conservedValues, const PetscReal *normal, PetscReal *density, PetscReal *densityG,
-                                              PetscReal *densityL, PetscReal *normalVelocity, PetscReal *velocity, PetscReal *internalEnergy, PetscReal *internalEnergyG, PetscReal *internalEnergyL,
-                                              PetscReal *aG, PetscReal *aL, PetscReal *MG, PetscReal *ML, PetscReal *p, PetscReal *T, PetscReal *alpha) = 0;
-        virtual ~TwoPhaseDecoder() = default;
-    };
 
     /**
      * Implementation for two perfect gases
@@ -122,6 +152,12 @@ class TwoPhaseEulerAdvection : public Process {
         eos::ThermodynamicTemperatureFunction liquidComputeSpeedOfSound;
         eos::ThermodynamicTemperatureFunction liquidComputePressure;
 
+
+        void MixedDecodeIncompressible(const PetscReal density, const PetscReal internalEnergy, const PetscReal Yg, const PetscReal Yl, PetscReal *rhoG, PetscReal *rhoL, PetscReal *eG, PetscReal *eL);
+
+        void MixedDecodeQuadratic(const PetscReal density, const PetscReal internalEnergy, const PetscReal Yg, const PetscReal Yl, PetscReal *rhoG, PetscReal *rhoL, PetscReal *eG, PetscReal *eL);
+        void MixedDecodeSNES(const PetscReal density, const PetscReal internalEnergy, const PetscReal Yg, const PetscReal Yl, PetscReal *rhoG, PetscReal *rhoL, PetscReal *eG, PetscReal *eL);
+
        public:
         PerfectGasStiffenedGasDecoder(PetscInt dim, const std::shared_ptr<eos::PerfectGas> &perfectGasEos1, const std::shared_ptr<eos::StiffenedGas> &perfectGasEos2);
 
@@ -177,19 +213,19 @@ class TwoPhaseEulerAdvection : public Process {
      */
     std::shared_ptr<TwoPhaseDecoder> decoder;
 
+    std::vector<std::string> auxUpdateFields = {};
+
    public:
-    static PetscErrorCode UpdateAuxTemperatureField2Gas(PetscReal time, PetscInt dim, const PetscFVCellGeom *cellGeom, const PetscInt uOff[], const PetscScalar *conservedValues, const PetscInt aOff[],
-                                                        PetscScalar *auxField, void *ctx);
 
-    static PetscErrorCode UpdateAuxPressureField2Gas(PetscReal time, PetscInt dim, const PetscFVCellGeom *cellGeom, const PetscInt uOff[], const PetscScalar *conservedValues, const PetscInt aOff[],
+    static PetscErrorCode UpdateAuxFieldsTwoPhase(PetscReal time, PetscInt dim, const PetscFVCellGeom *cellGeom, const PetscInt uOff[], const PetscScalar *conservedValues, const PetscInt aOff[],
                                                      PetscScalar *auxField, void *ctx);
 
-    static PetscErrorCode UpdateAuxVelocityField2Gas(PetscReal time, PetscInt dim, const PetscFVCellGeom *cellGeom, const PetscInt uOff[], const PetscScalar *conservedValues, const PetscInt aOff[],
-                                                     PetscScalar *auxField, void *ctx);
+
 
     TwoPhaseEulerAdvection(std::shared_ptr<eos::EOS> eosTwoPhase, const std::shared_ptr<parameters::Parameters> &parameters, std::shared_ptr<fluxCalculator::FluxCalculator> fluxCalculatorGasGas,
                            std::shared_ptr<fluxCalculator::FluxCalculator> fluxCalculatorGasLiquid, std::shared_ptr<fluxCalculator::FluxCalculator> fluxCalculatorLiquidGas,
                            std::shared_ptr<fluxCalculator::FluxCalculator> fluxCalculatorLiquidLiquid);
+    ~TwoPhaseEulerAdvection();
     void Setup(ablate::finiteVolume::FiniteVolumeSolver &flow) override;
 
    private:
@@ -200,6 +236,15 @@ class TwoPhaseEulerAdvection : public Process {
                                                            const PetscInt aOff[], const PetscScalar auxL[], const PetscScalar auxR[], PetscScalar *flux, void *ctx);
     static PetscErrorCode CompressibleFlowComputeVFFlux(PetscInt dim, const PetscFVFaceGeom *fg, const PetscInt uOff[], const PetscScalar fieldL[], const PetscScalar fieldR[], const PetscInt aOff[],
                                                         const PetscScalar auxL[], const PetscScalar auxR[], PetscScalar *flux, void *ctx);
+
+    // Vortex test source term function
+    static PetscErrorCode VortexTestSourceTerm(PetscInt dim, PetscReal time, const PetscFVCellGeom* cg, const PetscInt uOff[], const PetscScalar u[], const PetscInt aOff[], const PetscScalar a[], PetscScalar f[], void* ctx);
+
+    // Compute the Euler and density-volume fraction fluxes
+    static PetscErrorCode CompressibleFlowCompleteFlux(const ablate::finiteVolume::FiniteVolumeSolver &flow, DM dm, PetscReal time, Vec locXVec, Vec locFVec, void* ctx);
+
+    // Zalesak test source term function
+    static PetscErrorCode ZalesakTestSourceTerm(PetscInt dim, PetscReal time, const PetscFVCellGeom* cg, const PetscInt uOff[], const PetscScalar u[], const PetscInt aOff[], const PetscScalar a[], PetscScalar f[], void* ctx);
 
    public:
     /**

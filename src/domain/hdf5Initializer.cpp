@@ -123,17 +123,17 @@ PetscErrorCode ablate::domain::Hdf5Initializer::Hdf5MathFunction::Eval(PetscInt 
 double ablate::domain::Hdf5Initializer::Hdf5MathFunction::Eval(const double& x, const double& y, const double& z, const double& t) const {
     PetscFunctionBeginUser;
     PetscReal xyz[3] = {x, y, z};
-    PetscScalar result[resultSize];
+    std::vector<PetscScalar> result(resultSize);
 
-    Eval(3, xyz, result) >> utilities::PetscUtilities::checkError;
+    Eval(3, xyz, result.data()) >> utilities::PetscUtilities::checkError;
     return result[0];
     PetscFunctionReturn(0);
 }
 double ablate::domain::Hdf5Initializer::Hdf5MathFunction::Eval(const double* xyz, const int& ndims, const double& t) const {
     PetscFunctionBeginUser;
-    PetscScalar result[resultSize];
+    std::vector<PetscScalar> result(resultSize);
 
-    Eval(ndims, xyz, result) >> utilities::PetscUtilities::checkError;
+    Eval(ndims, xyz, result.data()) >> utilities::PetscUtilities::checkError;
     return result[0];
     PetscFunctionReturn(0);
 }

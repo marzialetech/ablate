@@ -1,4 +1,5 @@
 #include "cellSolver.hpp"
+#include "utilities/mathUtilities.hpp"
 #include <utility>
 
 ablate::solver::CellSolver::CellSolver(std::string solverId, std::shared_ptr<domain::Region> region, std::shared_ptr<parameters::Parameters> options)
@@ -27,16 +28,32 @@ void ablate::solver::CellSolver::RegisterAuxFieldUpdate(ablate::solver::CellSolv
         functionDescription.inputFields.push_back(fieldId.id);
     }
 
-    // Don't add the same field more than once
-    auto location = std::find_if(auxFieldUpdateFunctionDescriptions.begin(), auxFieldUpdateFunctionDescriptions.end(), [&functionDescription](const auto& description) {
-        return functionDescription.auxFields == description.auxFields;
-    });
+    std::size_t i = 0;
+    while ( i < auxFieldUpdateFunctionDescriptions.size()) {
 
-    if (location == auxFieldUpdateFunctionDescriptions.end()) {
-        auxFieldUpdateFunctionDescriptions.push_back(functionDescription);
-    } else {
-        *location = functionDescription;
+      auto otherDescription = auxFieldUpdateFunctionDescriptions.data()[i];
+      auto otherAuxFields = otherDescription.auxFields;
+
+      std::size_t j;
+      for (j = 0; j < functionDescription.auxFields.size(); ++j) {
+        if (std::find(otherAuxFields.begin(), otherAuxFields.end(), functionDescription.auxFields.data()[j]) != otherAuxFields.end()) {
+          // The field exists. Delete it.
+
+          if (otherAuxFields.size() > 1) {
+            throw std::runtime_error("An AUX-field update containing more than one field is being deleted in ablate::solver::CellSolver::RegisterAuxFieldUpdate. This behavior has not been checked.");
+          }
+
+          auxFieldUpdateFunctionDescriptions.erase(auxFieldUpdateFunctionDescriptions.begin() + i);
+          break;
+        }
+      }
+      if (j == functionDescription.auxFields.size()) {
+        // Nothing was removed. Move to the next function description.
+        ++i;
+      }
     }
+
+    auxFieldUpdateFunctionDescriptions.push_back(functionDescription);
 }
 
 void ablate::solver::CellSolver::RegisterSolutionFieldUpdate(ablate::solver::CellSolver::SolutionFieldUpdateFunction function, void* context, const std::vector<std::string>& inputFields) {
@@ -70,17 +87,13 @@ void ablate::solver::CellSolver::UpdateAuxFields(PetscReal time, Vec locXVec, Ve
     // Convert to a dmplex
     DMConvert(GetSubDomain().GetDM(), DMPLEX, &plex) >> utilities::PetscUtilities::checkError;
 
-    // Get the valid cell range over this region
-    ablate::domain::Range cellRange;
-    GetCellRange(cellRange);
-
     // Extract the cell geometry, and the dm that holds the information
     DM dmCell;
     const PetscScalar* cellGeomArray;
     VecGetDM(cellGeomVec, &dmCell) >> utilities::PetscUtilities::checkError;
     VecGetArrayRead(cellGeomVec, &cellGeomArray) >> utilities::PetscUtilities::checkError;
 
-    // extract the low flow and aux fields
+    // extract the low flow fields
     const PetscScalar* locFlowFieldArray;
     VecGetArrayRead(locXVec, &locFlowFieldArray) >> utilities::PetscUtilities::checkError;
 
@@ -108,14 +121,19 @@ void ablate::solver::CellSolver::UpdateAuxFields(PetscReal time, Vec locXVec, Ve
         }
     }
 
-    // March over each cell volume
+    // Get the valid cell range over this region. Need to get all of the cells, not just the interior ones
+    ablate::domain::Range cellRange;
+    GetSubDomain().GetCellRange(nullptr, cellRange);
+
+
+    // March over each cell volume.
     for (PetscInt c = cellRange.start; c < cellRange.end; ++c) {
+
+        // Get the cell location
+        const PetscInt cell = cellRange.GetPoint(c);
         PetscFVCellGeom* cellGeom;
         const PetscReal* fieldValues;
         PetscReal* auxValues;
-
-        // Get the cell location
-        const PetscInt cell = cellRange.points ? cellRange.points[c] : c;
 
         DMPlexPointLocalRead(dmCell, cell, cellGeomArray, &cellGeom) >> utilities::PetscUtilities::checkError;
         DMPlexPointLocalRead(plex, cell, locFlowFieldArray, &fieldValues) >> utilities::PetscUtilities::checkError;
@@ -188,6 +206,47 @@ void ablate::solver::CellSolver::UpdateSolutionFields(PetscReal time, Vec globXV
     VecRestoreArray(globXVec, &globalFlowFieldArray) >> utilities::PetscUtilities::checkError;
 
     RestoreRange(cellRange);
+}
+
+void ablate::solver::CellSolver::GetPointGeometricData(const PetscInt p, PetscReal *vol, PetscReal centroid[], PetscReal normal[]) const {
+      PetscInt depth, dim;
+      DM dm = subDomain->GetDM();
+
+      DMPlexGetDepth(dm, &depth) >> utilities::PetscUtilities::checkError;
+      DMGetDimension(dm, &dim) >> utilities::PetscUtilities::checkError;
+
+      if ( depth == (dim - 1) ) { // Face
+        DM dmFace;
+        const PetscScalar* faceGeomArray;
+        PetscFVFaceGeom* fg;
+
+        VecGetDM(faceGeomVec, &dmFace) >> utilities::PetscUtilities::checkError;
+        VecGetArrayRead(faceGeomVec, &faceGeomArray) >> utilities::PetscUtilities::checkError;
+        DMPlexPointLocalRead(dmFace, p, faceGeomArray, &fg) >> utilities::PetscUtilities::checkError;
+        VecRestoreArrayRead(faceGeomVec, &faceGeomArray) >> utilities::PetscUtilities::checkError;
+
+        if (vol) *vol = ablate::utilities::MathUtilities::MagVector(dim, fg->normal);
+        if (centroid) PetscArraycpy(centroid, fg->centroid, dim) >> utilities::PetscUtilities::checkError;
+        if (normal) PetscArraycpy(normal, fg->normal, dim) >> utilities::PetscUtilities::checkError;
+
+      } else if ( depth == dim ) { // Cell
+        DM dmCell;
+        const PetscScalar* cellGeomArray;
+        PetscFVCellGeom* cg;
+
+        VecGetDM(cellGeomVec, &dmCell) >> utilities::PetscUtilities::checkError;
+        VecGetArrayRead(cellGeomVec, &cellGeomArray) >> utilities::PetscUtilities::checkError;
+        DMPlexPointLocalRead(dmCell, p, cellGeomArray, &cg) >> utilities::PetscUtilities::checkError;
+        VecRestoreArrayRead(cellGeomVec, &cellGeomArray) >> utilities::PetscUtilities::checkError;
+
+        if (vol) *vol = cg->volume;
+        if (centroid) PetscArraycpy(centroid, cg->centroid, dim) >> utilities::PetscUtilities::checkError;
+        if (normal) PetscArrayzero(normal, dim) >> utilities::PetscUtilities::checkError;
+      }
+      else { // Edge in 3D or a vertex
+
+        DMPlexComputeCellGeometryFVM(dm, p, vol, centroid, normal) >> utilities::PetscUtilities::checkError;
+      }
 }
 
 void ablate::solver::CellSolver::Setup() {

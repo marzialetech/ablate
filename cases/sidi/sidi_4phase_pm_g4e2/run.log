@@ -1,0 +1,9 @@
+[NPhaseIntSharp] form = parameswaran_mandal (cell-centered scalar)
+[NPhaseIntSharp::Setup] BJ slope limiter (MUSCL) enabled for alphak and alphakrhok
+Timestep: 0000 time = 0        dt = 2.5e-05
+Timestep: 0100 time = 0.0025   dt = 2.5e-05
+Timestep: 0200 time = 0.005    dt = 2.5e-05
+Timestep: 0300 time = 0.0075   dt = 2.5e-05
+Timestep: 0400 time = 0.01     dt = 2.5e-05
+Timestep: 0500 time = 0.0125   dt = 2.5e-05
+Timestep: 0600 time = 0.015    dt = 2.5e-05

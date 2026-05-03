@@ -1,0 +1,122 @@
+---
+environment:
+  title: zalesak-2disk-3phase-pm-muscl-full-g1e3
+  tagDirectory: true
+arguments: {}
+timestepper:
+  name: theMainTimeStepper
+  arguments:
+    ts_type: euler
+    ts_max_time: 0.20943951023931953
+    ts_max_steps: 8378
+    ts_dt: 2.5e-5
+    ts_adapt_type: none
+  io: !<!ablate::io::Hdf5MultiFileSerializer>
+    interval: !<!ablate::io::interval::FixedInterval> 400
+  domain: !<!ablate::domain::BoxMesh>
+    name: nphaseZalesakDomain
+    faces: [200, 200]
+    lower: [0.0, 0.0]
+    upper: [1.0, 1.0]
+    boundary: [NONE, NONE]
+    modifiers:
+      - !<!ablate::domain::modifiers::DistributeWithGhostCells>
+        ghostCellDepth: 2
+      - !<!ablate::domain::modifiers::GhostBoundaryCells>
+        labelName: ""
+    fields:
+      - !<!ablate::finiteVolume::NPhaseFlowFields>
+        eos: !<!ablate::eos::NPhase> &1
+          eosk:
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+            - !<!ablate::eos::KthStiffenedGas>
+              parameters: {gamma: 1.4, Cp: 1004.5, p0: 0.0}
+      - {name: p, location: AUX, type: FVM}
+      - {name: rho, location: AUX, type: FVM}
+      - {name: rhok, location: AUX, type: FVM, components: [rhok0, rhok1, rhok2]}
+      - {name: tk, location: AUX, type: FVM, components: [tk0, tk1, tk2]}
+      - {name: epsilonk, location: AUX, type: FVM, components: [epsilonk0, epsilonk1, epsilonk2]}
+      - {name: sosk, location: AUX, type: FVM, components: [sosk0, sosk1, sosk2]}
+      - {name: debug, location: AUX, type: FVM, components: [debug0, debug1, debug2]}
+  initialization:
+    - fieldName: alphak
+      field: !<!ablate::mathFunctions::Formula> &2
+        formula: c0, c1, (1 - c0 - c1)
+        nested:
+          c0: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.75)^2) < 0.15) && (x < 0.475 || x > 0.525 || y > 0.80) ? 1 : 0"
+          c1: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.25)^2) < 0.15) && (x < 0.475 || x > 0.525 || y < 0.20) ? 1 : 0"
+    - fieldName: alphakrhok
+      field: !<!ablate::mathFunctions::Formula> &3
+        formula: rho*c0, rho*c1, rho*(1 - c0 - c1)
+        constants: &4
+          rho: 1.0
+          eps: 2.5
+          omega: 30.0
+        nested:
+          c0: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.75)^2) < 0.15) && (x < 0.475 || x > 0.525 || y > 0.80) ? 1 : 0"
+          c1: !<!ablate::mathFunctions::Formula>
+            formula: "(sqrt((x-0.5)^2 + (y-0.25)^2) < 0.15) && (x < 0.475 || x > 0.525 || y < 0.20) ? 1 : 0"
+    - fieldName: allaire
+      field: !<!ablate::mathFunctions::Formula>
+        formula: rho*(eps + 0.5*(u*u + v*v)), rho*u, rho*v
+        constants: *4
+        nested:
+          u: !<!ablate::mathFunctions::Formula>
+            formula: -omega*(y - 0.5)
+            constants: *4
+          v: !<!ablate::mathFunctions::Formula>
+            formula: omega*(x - 0.5)
+            constants: *4
+solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
+  id: nPhaseZalesak2Disk
+  processes:
+    - !<!ablate::finiteVolume::processes::NPhaseAllaireAdvection>
+      eos: *1
+      parameters:
+        zalesakTest: true
+      fluxCalculatorNStiff: !<!ablate::finiteVolume::fluxCalculator::AusmpUp>
+        mInf: 0.3
+    - !<!ablate::finiteVolume::processes::NPhaseNonconservativeRHS>
+      mInf: 0.3
+    - !<!ablate::finiteVolume::processes::NPhaseIntSharp>
+      Gammak: [1e-3, 1e-3, 1e-3]
+      epsilonk: [0.005, 0.005, 0.005]
+      flipPhiTildek: [0, 0, 0]
+      boundaryLayerMultiplier: 3.0
+  boundaryConditions:
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: allaire walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: allaire
+        field: !<!ablate::mathFunctions::Formula>
+          formula: rho*(eps + 0.5*(u*u + v*v)), rho*u, rho*v
+          constants: *4
+          nested:
+            u: !<!ablate::mathFunctions::Formula>
+              formula: -omega*(y - 0.5)
+              constants: *4
+            v: !<!ablate::mathFunctions::Formula>
+              formula: omega*(x - 0.5)
+              constants: *4
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphakrhok walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: alphakrhok
+        field: *3
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialGhost>
+      boundaryName: alphak walls
+      labelIds: [1, 2, 3, 4]
+      boundaryValue:
+        fieldName: alphak
+        field: *2
+  monitors:
+    - !<!ablate::monitors::TimeStepMonitor>
+      interval: 25

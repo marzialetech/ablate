@@ -1,0 +1,42 @@
+wrote runs/slab/we126/postproc/lobe_final.png
+wrote runs/slab/we126/postproc/lobe_zoom.png
+[detect-equilibrium] no convergence: 0 qualifying window(s) out of 0 eligible; required 2 consecutive.
+[detect-equilibrium] theta at dissertation t_f=0.0005s = 10.800 deg (interpolated)
+wrote runs/slab/we126/postproc/theta_vs_time.png
+theta = 9.637 deg  (dissertation = 29.43 deg, error = -19.793 deg, relative -67.26%)
+[anim] 141 snapshots
+  frame    0/140  t=0.0000e+00s  theta=1.70 deg
+  frame    5/140  t=5.0000e-05s  theta=2.10 deg
+  frame   10/140  t=1.0000e-04s  theta=2.99 deg
+  frame   15/140  t=1.5000e-04s  theta=4.01 deg
+  frame   20/140  t=2.0000e-04s  theta=5.05 deg
+  frame   25/140  t=2.5000e-04s  theta=6.09 deg
+  frame   30/140  t=3.0000e-04s  theta=7.10 deg
+  frame   35/140  t=3.5000e-04s  theta=8.07 deg
+  frame   40/140  t=4.0000e-04s  theta=9.01 deg
+  frame   45/140  t=4.5000e-04s  theta=9.92 deg
+  frame   50/140  t=5.0000e-04s  theta=10.80 deg
+  frame   55/140  t=5.5000e-04s  theta=8.86 deg
+  frame   60/140  t=6.0000e-04s  theta=12.32 deg
+  frame   65/140  t=6.5000e-04s  theta=9.95 deg
+  frame   70/140  t=7.0000e-04s  theta=10.49 deg
+  frame   75/140  t=7.5000e-04s  theta=11.47 deg
+  frame   80/140  t=8.0000e-04s  theta=9.02 deg
+  frame   85/140  t=8.5000e-04s  theta=9.77 deg
+  frame   90/140  t=9.0000e-04s  theta=10.50 deg
+  frame   95/140  t=9.5000e-04s  theta=11.16 deg
+  frame  100/140  t=1.0000e-03s  theta=11.76 deg
+  frame  105/140  t=1.0500e-03s  theta=12.31 deg
+  frame  110/140  t=1.1000e-03s  theta=12.82 deg
+  frame  115/140  t=1.1500e-03s  theta=13.28 deg
+  frame  120/140  t=1.2000e-03s  theta=13.73 deg
+  frame  125/140  t=1.2500e-03s  theta=8.29 deg
+  frame  130/140  t=1.3000e-03s  theta=8.71 deg
+  frame  135/140  t=1.3500e-03s  theta=9.15 deg
+  frame  140/140  t=1.4000e-03s  theta=9.64 deg
+[anim] running: ffmpeg -y -framerate 10 -i runs/slab/we126/postproc/animation/frames/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 runs/slab/we126/postproc/animation/lobe_animation.mp4
+[anim] wrote runs/slab/we126/postproc/animation/lobe_animation.mp4
+[anim] running: ffmpeg -y -framerate 10 -i runs/slab/we126/postproc/animation/frames_context/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 runs/slab/we126/postproc/animation/context_animation.mp4
+[anim] wrote runs/slab/we126/postproc/animation/context_animation.mp4
+[anim] running: ffmpeg -y -framerate 10 -i runs/slab/we126/postproc/animation/frames_combined/frame_%04d.png -c:v libx264 -pix_fmt yuv420p -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 runs/slab/we126/postproc/animation/combined_animation.mp4
+[anim] wrote runs/slab/we126/postproc/animation/combined_animation.mp4

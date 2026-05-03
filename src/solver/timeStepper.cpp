@@ -5,6 +5,10 @@
 #include "adaptPhysicsConstrained.hpp"
 #include "utilities/petscUtilities.hpp"
 
+#define NOTE0EXIT(S, ...) {PetscFPrintf(MPI_COMM_WORLD, stderr,                                     \
+  "\x1b[1m(%s:%d, %s)\x1b[0m\n  \x1b[1m\x1b[90mexiting:\x1b[0m " S "\n",    \
+  __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__); PetscFinalize(); exit(0);}
+
 ablate::solver::TimeStepper::TimeStepper(std::shared_ptr<ablate::domain::Domain> domain, const std::shared_ptr<ablate::parameters::Parameters>& arguments, std::shared_ptr<io::Serializer> serializer,
                                          std::shared_ptr<ablate::domain::Initializer> initializations, std::vector<std::shared_ptr<mathFunctions::FieldFunction>> exactSolutions,
                                          std::vector<std::shared_ptr<mathFunctions::FieldFunction>> absoluteTolerances, std::vector<std::shared_ptr<mathFunctions::FieldFunction>> relativeTolerances,
@@ -66,11 +70,13 @@ ablate::solver::TimeStepper::~TimeStepper() { TSDestroy(&ts) >> utilities::Petsc
 
 bool ablate::solver::TimeStepper::Initialize() {
     StartEvent((this->name + "::Initialize").c_str());
+    //PetscPrintf(MPI_COMM_WORLD, "Starting TimeStepper::Initialize\n");
 
     // Keep track if this need to be initialized
     bool justInitialized = false;
 
     if (!initialized) {
+        //PetscPrintf(MPI_COMM_WORLD, "TimeStepper not initialized, initializing now\n");
         domain->InitializeSubDomains(solvers, initializations, exactSolutions);
         TSSetDM(ts, domain->GetDM()) >> utilities::PetscUtilities::checkError;
         initialized = true;
@@ -81,6 +87,7 @@ bool ablate::solver::TimeStepper::Initialize() {
             DMTSSetBoundaryLocal(domain->GetDM(), SolverComputeBoundaryFunctionLocal, this) >> utilities::PetscUtilities::checkError;
         }
         if (!rhsFunctionSolvers.empty()) {
+            //PetscPrintf(MPI_COMM_WORLD, "Registering RHS functions\n");
             DMTSSetRHSFunction(domain->GetDM(), SolverComputeRHSFunction, this) >> utilities::PetscUtilities::checkError;
         }
         if (!iFunctionSolvers.empty()) {
@@ -105,6 +112,7 @@ bool ablate::solver::TimeStepper::Initialize() {
 
         // set the ts from options
         TSSetSolution(ts, solutionVec) >> utilities::PetscUtilities::checkError;
+        //PetscPrintf(MPI_COMM_WORLD, "Setting TS from options\n");
         TSSetFromOptions(ts) >> utilities::PetscUtilities::checkError;
 
         TSAdapt adapt = nullptr;
@@ -122,11 +130,13 @@ bool ablate::solver::TimeStepper::Initialize() {
             serializer->RestoreTS(ts);
         }
     }
+    //PetscPrintf(MPI_COMM_WORLD, "TimeStepper::Initialize complete\n");
     EndEvent();
     return justInitialized;
 }
 
 void ablate::solver::TimeStepper::Solve() {
+    //PetscPrintf(MPI_COMM_WORLD, "Starting TimeStepper::Solve\n");
     // Call initialize, this will only initialize if it has not been called
     Initialize();
 
@@ -135,6 +145,7 @@ void ablate::solver::TimeStepper::Solve() {
 
     // If there are no solvers
     if (solvers.empty()) {
+        //PetscPrintf(MPI_COMM_WORLD, "No solvers registered!\n");
         // write at least one output
         if (serializer) {
             PetscInt step;
@@ -185,7 +196,11 @@ void ablate::solver::TimeStepper::Solve() {
     auto logEvent = RegisterEvent((this->name + "::Solve").c_str());
     PetscLogEventSetDof(logEvent, 0, dof) >> utilities::PetscUtilities::checkError;
     PetscLogEventBegin(logEvent, 0, 0, 0, 0);
-    TSSolve(ts, solutionVec) >> utilities::PetscUtilities::checkError;
+
+    //PetscPrintf(MPI_COMM_WORLD, "About to call TSSolve\n");
+    TSSolve(ts, nullptr) >> utilities::PetscUtilities::checkError;
+    //PetscPrintf(MPI_COMM_WORLD, "TSSolve complete\n");
+
     PetscLogEventEnd(logEvent, 0, 0, 0, 0);
 }
 
@@ -196,6 +211,8 @@ double ablate::solver::TimeStepper::GetTime() const {
 }
 
 void ablate::solver::TimeStepper::Register(const std::shared_ptr<ablate::solver::Solver>& solver, const std::vector<std::shared_ptr<monitors::Monitor>>& solverMonitors) {
+    //PetscPrintf(MPI_COMM_WORLD, "Registering solver %s\n", solver->GetSolverId().c_str());
+    
     // Save the solver and setup the domain
     solvers.push_back(solver);
 
@@ -212,17 +229,22 @@ void ablate::solver::TimeStepper::Register(const std::shared_ptr<ablate::solver:
 
     // check to see if the solver implements a solver function
     if (auto interface = std::dynamic_pointer_cast<IFunction>(solver)) {
+        //PetscPrintf(MPI_COMM_WORLD, "Solver %s implements IFunction\n", solver->GetSolverId().c_str());
         iFunctionSolvers.push_back(interface);
     }
     if (auto interface = std::dynamic_pointer_cast<RHSFunction>(solver)) {
+        //PetscPrintf(MPI_COMM_WORLD, "Solver %s implements RHSFunction\n", solver->GetSolverId().c_str());
         rhsFunctionSolvers.push_back(interface);
     }
     if (auto interface = std::dynamic_pointer_cast<BoundaryFunction>(solver)) {
+        //PetscPrintf(MPI_COMM_WORLD, "Solver %s implements BoundaryFunction\n", solver->GetSolverId().c_str());
         boundaryFunctionSolvers.push_back(interface);
     }
     if (auto interface = std::dynamic_pointer_cast<PhysicsTimeStepFunction>(solver)) {
+        //PetscPrintf(MPI_COMM_WORLD, "Solver %s implements PhysicsTimeStepFunction\n", solver->GetSolverId().c_str());
         physicsTimeStepFunctionSolvers.push_back(interface);
     }
+    //PetscPrintf(MPI_COMM_WORLD, "Completed registering solver %s\n", solver->GetSolverId().c_str());
 }
 
 PetscErrorCode ablate::solver::TimeStepper::TSPreStepFunction(TS ts) {
@@ -381,6 +403,7 @@ PetscErrorCode ablate::solver::TimeStepper::SolverComputeRHSFunction(TS ts, Pets
     DMRestoreLocalVector(dm, &locX);
     DMRestoreLocalVector(dm, &locF);
     timeStepper->EndEvent();
+
 
     if (timeStepper->verboseSourceCheck) {
         timeStepper->StartEvent("SolverComputeRHSFunction::CheckFieldValues");

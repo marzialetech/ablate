@@ -60,7 +60,11 @@ DM ablate::domain::CadFile::ReadDMFromCadFile(const std::string& name, const std
     DMPlexSetRefinementUniform(dm, PETSC_TRUE) >> utilities::PetscUtilities::checkError;
 
     // inflate the mesh
-    DMPlexInflateToGeomModel(dm, PETSC_TRUE) >> utilities::PetscUtilities::checkError;
+    // PETSc 3.22.0 signature: DMPlexInflateToGeomModel(DM); newer PETSc adds a
+    // PetscBool flag (e.g. for surface markers). Using the 1-arg form for ABLATE's
+    // tested PETSc commit (382a0339, 3.22.0). cadFile is CAD/EGADS-only and is not
+    // exercised by the FV regression cases driving this build.
+    DMPlexInflateToGeomModel(dm) >> utilities::PetscUtilities::checkError;
     return dm;
 }
 
