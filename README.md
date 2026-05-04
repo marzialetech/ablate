@@ -33,10 +33,13 @@ pip install h5py matplotlib numpy scikit-image
 # export petsc paths into your shell
 export PETSC_DIR=$HOME/petsc
 export PETSC_ARCH=arch-ablate-opt
+export PKG_CONFIG_PATH="$PETSC_DIR/$PETSC_ARCH/lib/pkgconfig:$PKG_CONFIG_PATH"
 
-# build ablate
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j --target ablate
+# build ablate. CMAKE_POLICY_VERSION_MINIMUM is needed because bundled deps
+# (yaml-cpp, mu-parser, json) declare cmake_minimum_required < 3.5; -j4 caps
+# parallelism so the C++ frontend doesn't OOM 16 GB machines.
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build build -j4 --target ablate
 ```
 
 verify:
@@ -55,7 +58,7 @@ each case lives in `cases/<group>/<name>/`. its `input.yaml` is the ablate deck;
 cd cases/sidi/sidi_4phase_pm_g4e2
 
 # run ablate; writes hdf5 trajectory into a timestamped subdir of this cwd
-../../../build/ablate -i input.yaml
+../../../build/ablate --input input.yaml
 
 # regenerate the figures into ./postproc/
 ./postproc/run.sh

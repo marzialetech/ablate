@@ -13,19 +13,20 @@ set -euo pipefail
 
 PETSC_DIR="${PETSC_DIR:-$HOME/petsc}"
 PETSC_ARCH="${PETSC_ARCH:-arch-ablate-opt}"
-PETSC_BRANCH="${PETSC_BRANCH:-main}"
+# PETSc revision ablate is officially tested against (per ablate.dev/#status).
+# Newer PETSc main has API drift the fork doesn't compile against
+# (PetscErrorMessage 3rd arg became const char**, VLA strictness, etc.).
+PETSC_REF="${PETSC_REF:-382a0339}"
 
 if [ ! -d "$PETSC_DIR" ]; then
   echo "==> cloning PETSc into $PETSC_DIR"
-  git clone --depth=1 --branch "$PETSC_BRANCH" \
-    https://gitlab.com/petsc/petsc.git "$PETSC_DIR"
+  git clone https://gitlab.com/petsc/petsc.git "$PETSC_DIR"
+  git -C "$PETSC_DIR" checkout "$PETSC_REF"
 else
   echo "==> reusing existing PETSc at $PETSC_DIR"
 fi
 
 cd "$PETSC_DIR"
-unset PETSC_DIR
-unset PETSC_ARCH
 
 # Configure flags below intentionally exclude opencascade / egads / kokkos:
 #   - opencascade / egads: CAD geometry kernels. Used by ablate only for
