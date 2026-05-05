@@ -10,7 +10,7 @@ target_sources(ablateLibrary
         nPhaseSurfaceTension.cpp
         nPhaseNonconservativeRHS.cpp
         nPhaseIntSharp.cpp
-        # intSharp.cpp
+        intSharp.cpp
         # issf.cpp
         locations.cpp
         gravity.cpp
@@ -40,7 +40,7 @@ target_sources(ablateLibrary
         nPhaseSurfaceTension.hpp
         nPhaseNonconservativeRHS.hpp
         nPhaseIntSharp.hpp
-        # intSharp.hpp
+        intSharp.hpp
         # issf.hpp
         locations.hpp
         gravity.hpp

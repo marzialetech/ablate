@@ -117,6 +117,20 @@ void ablate::finiteVolume::processes::IntSharp::Setup(ablate::finiteVolume::Fini
     if (!fvSolver) {
       return;
     }
+
+    if (Gamma > 0.0) {
+        fvSolver->EnableSlopeLimiterFor(VOLUME_FRACTION_FIELD);
+        fvSolver->EnableSlopeLimiterFor(DENSITY_VF_FIELD);
+        fvSolver->EnableSlopeLimiterFor(ablate::finiteVolume::CompressibleFlowFields::EULER_FIELD);
+        PetscPrintf(PETSC_COMM_WORLD,
+                    "[IntSharp::Setup] BJ slope limiter (MUSCL) enabled for %s, %s, and %s\n",
+                    VOLUME_FRACTION_FIELD.c_str(), DENSITY_VF_FIELD.c_str(),
+                    ablate::finiteVolume::CompressibleFlowFields::EULER_FIELD.c_str());
+    } else {
+        PetscPrintf(PETSC_COMM_WORLD,
+                    "[IntSharp::Setup] Gamma=0: limiter NOT enabled (diffuse-equivalent mode)\n");
+    }
+
     PetscReal h;
     DMPlexGetMinRadius(dm, &h);
 
@@ -172,8 +186,13 @@ void ablate::finiteVolume::processes::IntSharp::Setup(ablate::finiteVolume::Fini
         DMPlexVertexRestoreCells(dm, vertex, &nvn, &vertexneighbors);
     }
 
-    auto intSharpPreStage = std::bind(intSharpPreStageWrapper, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, this);
-    flow.RegisterPreStage(intSharpPreStage);
+    if (Gamma > 0.0) {
+        auto intSharpPreStage = std::bind(intSharpPreStageWrapper, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3, this);
+        flow.RegisterPreStage(intSharpPreStage);
+    } else {
+        PetscPrintf(PETSC_COMM_WORLD,
+                    "[IntSharp::Setup] Gamma=0: PreStage NOT registered (process is inert; equivalent to no IntSharp in deck)\n");
+    }
 }
 
 PetscErrorCode ablate::finiteVolume::processes::IntSharp::PreStage(TS flowTs, ablate::solver::Solver &solver, PetscReal stagetime) {
@@ -310,7 +329,7 @@ PetscErrorCode ablate::finiteVolume::processes::IntSharp::PreStage(TS flowTs, ab
         }
 
         //get the magnitude of the gradient of the phitilde field using DMPlexCellGradFromCell
-        PetscScalar gradphic[dim];
+        PetscScalar gradphic[3] = {0.0, 0.0, 0.0};
         // DMPlexCellGradFromCell(auxDM, cell, auxVec, phitildeField.id, 0, gradphic);
         //take grad from phic field
         DMPlexCellGradFromCell(dm, cell, locX, phiField.id, 0, gradphic);
@@ -333,28 +352,54 @@ PetscErrorCode ablate::finiteVolume::processes::IntSharp::PreStage(TS flowTs, ab
 
         // *rhophiSource += rhog * *fsharp;
 
-        PetscReal velocity[3]; 
-        for (PetscInt d = 0; d < dim; d++) { 
-            velocity[d] = allFields[ablate::finiteVolume::CompressibleFlowFields::RHOU + d] / allFields[ablate::finiteVolume::CompressibleFlowFields::RHO]; 
+        const PetscReal rho_old  = allFields[ablate::finiteVolume::CompressibleFlowFields::RHO];
+        const PetscReal rhoE_old = allFields[ablate::finiteVolume::CompressibleFlowFields::RHOE];
+        PetscReal velocity[3] = {0.0, 0.0, 0.0};
+        for (PetscInt d = 0; d < dim; d++) {
+            velocity[d] = allFields[ablate::finiteVolume::CompressibleFlowFields::RHOU + d] / rho_old;
         }
+        PetscReal v2_old = 0.0;
+        for (PetscInt d = 0; d < dim; ++d) v2_old += velocity[d] * velocity[d];
+        const PetscReal e_old = (rhoE_old - 0.5 * rho_old * v2_old) / rho_old;
+
         PetscReal pseudoTime = 1e-3;
         PetscReal *densityG, *densityL, *eG, *eL;
         xDMPlexPointLocalRead(auxDM, cell, gasDensityField.id, auxArray, &densityG) >> utilities::PetscUtilities::checkError;
         xDMPlexPointLocalRead(auxDM, cell, liquidDensityField.id, auxArray, &densityL) >> utilities::PetscUtilities::checkError;
         xDMPlexPointLocalRead(auxDM, cell, gasEnergyField.id, auxArray, &eG) >> utilities::PetscUtilities::checkError;
         xDMPlexPointLocalRead(auxDM, cell, liquidEnergyField.id, auxArray, &eL) >> utilities::PetscUtilities::checkError;
-    
-        // update corresponding euler field values based on new alpha
-        if (*phic > 1e-3 && *phic < 1-1e-3) {
-            allFields[vfOffset] += pseudoTime * *fsharp;
-            if (allFields[vfOffset] < 0.0) { allFields[vfOffset] = 0.0; } 
-            else if (allFields[vfOffset] > 1.0) { allFields[vfOffset] = 1.0; }
-            allFields[rhoAlphaOffset] = *densityG * allFields[vfOffset];
-            allFields[ablate::finiteVolume::CompressibleFlowFields::RHO] = allFields[vfOffset] * *densityG + (1 - allFields[vfOffset]) * *densityL;
-            // allFields[ablate::finiteVolume::CompressibleFlowFields::RHOE] = allFields[rhoAlphaOffset] * *eG + (allFields[ablate::finiteVolume::CompressibleFlowFields::RHO] - allFields[rhoAlphaOffset]) * *eL;
-            for (PetscInt d = 0; d < dim; ++d) {
-                allFields[ablate::finiteVolume::CompressibleFlowFields::RHOU + d] = allFields[ablate::finiteVolume::CompressibleFlowFields::RHO] * velocity[d];
+        (void)eG; (void)eL;
+
+        if (process->Gamma > 0.0 && *phic > 1e-3 && *phic < 1.0 - 1e-3) {
+            const PetscReal alpha_old = allFields[vfOffset];
+            PetscReal       alpha_raw = alpha_old + pseudoTime * (*fsharp);
+            if (alpha_raw < 0.0)      alpha_raw = 0.0;
+            else if (alpha_raw > 1.0) alpha_raw = 1.0;
+            PetscReal delta_alpha = alpha_raw - alpha_old;
+
+            const PetscReal drho_per_dalpha = (*densityG) - (*densityL);
+            if (drho_per_dalpha != 0.0) {
+                const PetscReal rho_floor =
+                    0.1 * PetscMin(PetscAbsReal(*densityG), PetscAbsReal(*densityL));
+                const PetscReal delta_boundary = (rho_floor - rho_old) / drho_per_dalpha;
+                if (drho_per_dalpha < 0.0) {
+                    if (delta_alpha > delta_boundary) delta_alpha = delta_boundary;
+                } else {
+                    if (delta_alpha < delta_boundary) delta_alpha = delta_boundary;
+                }
             }
+
+            const PetscReal alpha_new = alpha_old + delta_alpha;
+            allFields[vfOffset]        = alpha_new;
+            allFields[rhoAlphaOffset] += (*densityG) * delta_alpha;
+
+            const PetscReal rho_new = rho_old + drho_per_dalpha * delta_alpha;
+            allFields[ablate::finiteVolume::CompressibleFlowFields::RHO] = rho_new;
+
+            for (PetscInt d = 0; d < dim; ++d) {
+                allFields[ablate::finiteVolume::CompressibleFlowFields::RHOU + d] = rho_new * velocity[d];
+            }
+            allFields[ablate::finiteVolume::CompressibleFlowFields::RHOE] = rho_new * (e_old + 0.5 * v2_old);
         }
     }
 
