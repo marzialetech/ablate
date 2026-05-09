@@ -1,0 +1,242 @@
+---
+environment:
+  title: star2d_isf_circle_g1_BJoff
+  tagDirectory: false
+arguments:
+  petscfv_type: leastsquares
+  petsclimiter_type: vanleer
+timestepper:
+  name: theMainTimeStepper
+  arguments:
+    ts_type: rk
+    ts_max_time: 2e-3
+    ts_dt: 2e-7
+    ts_adapt_type: none
+  io: !<!ablate::io::Hdf5MultiFileSerializer>
+    interval: !<!ablate::io::interval::FixedInterval> 50
+  domain: !<!ablate::domain::BoxMeshBoundaryCells> &1
+    name: simpleBoxField
+    faces: [71, 71]
+    lower: [-0.035, -0.035]
+    upper: [+0.035, +0.035]
+    boundary: [NONE, NONE]
+    simplex: false
+    options:
+      dm_distribute: false
+      dm_refine: 0
+    preModifiers:
+      - !<!ablate::domain::modifiers::DistributeWithGhostCells>
+        ghostCellDepth: 4
+    postModifiers: ~
+    fields:
+      - !<!ablate::finiteVolume::CompressibleFlowFields>
+        eos: !<!ablate::eos::PerfectGas>
+          parameters:
+            gamma: 1.4
+            Rgas: 287.0
+        region:
+          name: domain
+      - name: densityvolumeFraction
+        type: FVM
+        region:
+          name: domain
+      - name: gasDensity
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: liquidDensity
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: gasEnergy
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: liquidEnergy
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: volumeFraction
+        type: FVM
+        region:
+          name: domain
+      - name: pressure
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: phitilde_surfaceforce
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: kappa
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: sf_magnitude
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: rank
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: debug1
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: debug2
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - !<!ablate::domain::FieldDescription>
+        name: cellLocations
+        prefix: cellLocations
+        components: [x2, y2]
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - !<!ablate::domain::FieldDescription>
+        name: vertexLocations
+        prefix: vertexLocations
+        components: [x3, y3]
+        location: AUX
+        type: FE
+        region:
+          name: domain
+        options:
+          petscspace_degree: 1
+  initialization:
+    - fieldName: volumeFraction
+      field: !<!ablate::levelSet::VOFMathFunction> &2
+        domain: *1
+        levelSet: !<!ablate::mathFunctions::Formula>
+          formula: " -sqrt(x*x + y*y) + 2.7971e-2 * cos((2*asin(0.5)+27.4*3.141592653589793)/(2*4)) / cos((2*asin(0.5*cos(4*atan2(y,x)))+27.4*3.141592653589793)/(2*4)) "
+    - fieldName: densityvolumeFraction
+      field: !<!ablate::mathFunctions::Formula>
+        formula: vof*airDensity
+        constants: &3
+          waterDensity: 998.23
+          waterCp: 8095.08
+          waterGamma: 1.932
+          airDensity: 1.1614401858304297
+          airCv: 717.5
+          airGamma: 1.4
+          T: 300
+          P: 100000
+        nested:
+          vof: *2
+    - fieldName: euler
+      field: !<!ablate::mathFunctions::Formula>
+        formula: density, density*(Yw*waterEnergy + Ya*airEnergy), 0, 0
+        constants: *3
+        nested:
+          vof: *2
+          Yw: !<!ablate::mathFunctions::Formula> &4
+            formula: " waterDensity*(1-vof) / (waterDensity*(1-vof) + airDensity*vof) "
+            constants: *3
+            nested:
+              vof: *2
+          Ya: !<!ablate::mathFunctions::Formula> &5
+            formula: " airDensity*(vof) / (waterDensity*(1-vof) + airDensity*vof) "
+            constants: *3
+            nested:
+              vof: *2
+          density: !<!ablate::mathFunctions::Formula>
+            formula: " waterDensity*airDensity/(waterDensity*Ya + airDensity*Yw) "
+            constants: *3
+            nested:
+              Ya: *5
+              Yw: *4
+          waterEnergy: !<!ablate::mathFunctions::Formula>
+            formula: (waterCp/waterGamma)*T + waterP0/waterDensity
+            constants: *3
+            nested:
+              waterP0: !<!ablate::mathFunctions::Formula>
+                formula: " ( (waterGamma - 1)*waterDensity*waterCp*T/waterGamma - P)"
+                constants: *3
+          airEnergy: !<!ablate::mathFunctions::Formula>
+            formula: airCv*T
+            constants: *3
+solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
+  id: Multiphase Problem
+  region:
+    name: interiorCells
+  processes:
+    - !<!ablate::finiteVolume::processes::NavierStokesTransport>
+      eos: !<!ablate::eos::PerfectGas>
+        parameters:
+          gamma: 0
+          Rgas: 0
+      transport: !<!ablate::eos::transport::TwoPhaseTransport>
+        transport1: !<!ablate::eos::transport::Constant>
+          k: 0.06
+          mu: 0.06
+        transport2: !<!ablate::eos::transport::Constant>
+          k: 0.08
+          mu: 0.08
+    - !<!ablate::finiteVolume::processes::TwoPhaseEulerAdvection>
+      eos: !<!ablate::eos::TwoPhase>
+        eos1: !<!ablate::eos::PerfectGas>
+          parameters:
+            gamma: 1.4
+            Rgas: 287.0
+        eos2: !<!ablate::eos::StiffenedGas>
+          parameters:
+            gamma: 1.932
+            Cp: 8095.08
+            p0: 1169350402.52
+      fluxCalculatorGasGas: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+      fluxCalculatorGasLiquid: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+      fluxCalculatorLiquidGas: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+      fluxCalculatorLiquidLiquid: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+    - !<!ablate::finiteVolume::processes::IntSharp>
+      Gamma: 1.0
+      disableBJSlopeLimiter: true
+      epsilon: 5e-5
+      flipPhiTilde: false
+      boundaryLayerMultiplier: 6.0
+      laplaceYoungTest: false
+    - !<!ablate::finiteVolume::processes::SurfaceForce>
+      sigma: 2000
+      C: 1
+      N: 2.0
+      flipPhiTilde: true
+      applyToSolution: true
+      laplaceYoungTest: true
+      laplaceYoungTestKappaC: 1.0
+  boundaryConditions:
+    - !<!ablate::finiteVolume::boundaryConditions::ZeroDerBoundary>
+      boundaryName: euler_walls
+      labelIds: [boundaryCellsLeft, boundaryCellsRight, boundaryCellsTop, boundaryCellsBottom]
+      boundaryValue:
+        fieldName: euler
+        field: !<!ablate::mathFunctions::Formula>
+          formula: 1.16144018583042973286, 250010, 0.0, 0.0
+    - !<!ablate::finiteVolume::boundaryConditions::ZeroDerBoundary>
+      boundaryName: vf_walls
+      labelIds: [boundaryCellsLeft, boundaryCellsRight, boundaryCellsTop, boundaryCellsBottom]
+      boundaryValue:
+        fieldName: densityvolumeFraction
+        field: !<!ablate::mathFunctions::Formula>
+          formula: 1.16144018583042973286
+    - !<!ablate::finiteVolume::boundaryConditions::ZeroDerBoundary>
+      boundaryName: alpha_walls
+      labelIds: [boundaryCellsLeft, boundaryCellsRight, boundaryCellsTop, boundaryCellsBottom]
+      boundaryValue:
+        fieldName: volumeFraction
+        field: 1
+  monitors:
+    - !<!ablate::monitors::TimeStepMonitor>
+      interval: 5000

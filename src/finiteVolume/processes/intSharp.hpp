@@ -20,6 +20,41 @@ class IntSharp : public Process {
     PetscReal Gamma;
     PetscReal epsilon;
     bool flipPhiTilde;
+    // If true: IS::PreStage updates ONLY the volumeFraction (alpha) slot.
+    // rho, rhoAlpha, rhoE, rhoU are left untouched.  Per the user, this
+    // matches earlier IS+SF runs that were stable; the full mixture rebuild
+    // (alphaOnly=false) introduces step-discontinuous EOS state changes that
+    // amplify at cusps (right-cusp tip drives |v|->63 m/s -> NaN).
+    // Default true.
+    bool alphaOnly;
+    // LAPLACE-YOUNG TEST MODE (analogous to ZalesakTest's hardcode of
+    // non-essential fields in twoPhaseEulerAdvection).
+    //
+    // When laplaceYoungTest=true, IS::PreStage applies bulk-phase pinning
+    // every stage:
+    //   * Pure-gas cells (alpha >= 0.99): forced to ambient gas state
+    //     (rho=rho_G, v=0, rhoE=rho_G*eG).  Eliminates gas-side acoustics.
+    //   * Pure-liquid cells (alpha <= 0.01): velocity pinned to 0
+    //     (rhoU=0).  Preserves rho/rhoE so the LY pressure jump can still
+    //     develop in the bulk liquid via EOS, but kills bulk acoustics.
+    //   * Interface band (0.01 < alpha < 0.99): UNTOUCHED.  Full IS+SF
+    //     physics, exactly as in production code.
+    //
+    // The flag is OFF by default; pinning is gated entirely on this
+    // single switch and never affects production code paths.  Per the
+    // dissertation (Sec. 4.2.1, 4.3), the IS+SF case is not committed
+    // to the full compressible flow model -- only the IS+SF interface
+    // physics matters.  This mode is the LY analogue of ZalesakTest.
+    bool laplaceYoungTest;
+    // BJ (Barth-Jespersen) slope limiter on volumeFraction +
+    // densityvolumeFraction is auto-enabled at Setup when Gamma>0.  This
+    // flag allows force-DISABLING it independently for diagnostic isolation:
+    // does Gamma>0 instability come from the Parameswaran-Mandal sharpening
+    // term, or from the BJ limiter being on the vof field?  The two are
+    // orthogonal but historically coupled via the Gamma>0 gate.
+    // Default false (current production behavior: when Gamma>0, BJ ON).
+    // Inverted naming so OPT(bool) absence in YAML preserves legacy behavior.
+    bool disableBJSlopeLimiter;
     //mesh for vertex information
     DM vertexDM{};
     std::shared_ptr<ablate::domain::SubDomain> subDomain;
@@ -40,7 +75,7 @@ class IntSharp : public Process {
      * @param flipPhiTilde
      * @param boundaryLayerMultiplier Optional multiplier for boundary layer thickness (default: 3.0)
      */
-    explicit IntSharp(PetscReal Gamma, PetscReal epsilon, bool flipPhiTilde, PetscReal boundaryLayerMultiplier = 3.0);
+    explicit IntSharp(PetscReal Gamma, PetscReal epsilon, bool flipPhiTilde, PetscReal boundaryLayerMultiplier = 3.0, bool alphaOnly = true, bool laplaceYoungTest = false, bool disableBJSlopeLimiter = false);
 
     /**
      * Clean up the dm created

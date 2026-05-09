@@ -1,0 +1,249 @@
+---
+environment:
+  title: finger2d_2finger_200_isf_g1em1_s50
+  tagDirectory: false
+  directory: finger2d_2finger_200_isf_g1em1_s50
+arguments:
+  petscfv_type: leastsquares
+  petsclimiter_type: vanleer
+  dm_plex_periodic_cut: true
+timestepper:
+  name: theMainTimeStepper
+  arguments:
+    ts_type: rk
+    ts_dt: 8e-7
+    ts_max_steps: 6250
+    ts_adapt_type: none
+  io: !<!ablate::io::Hdf5MultiFileSerializer>
+    interval: !<!ablate::io::interval::FixedInterval> 250
+  domain: !<!ablate::domain::BoxMeshBoundaryCells> &1
+    name: simpleBoxField
+    faces: [200, 200]
+    lower: [0.0, 0.0]
+    upper: [0.2, 0.2]
+    boundary: [PERIODIC, NONE]
+    simplex: false
+    options:
+      dm_distribute: false
+      dm_refine: 0
+    preModifiers:
+      - !<!ablate::domain::modifiers::DistributeWithGhostCells>
+        ghostCellDepth: 4
+    postModifiers: ~
+    fields:
+      - !<!ablate::finiteVolume::CompressibleFlowFields>
+        eos: !<!ablate::eos::PerfectGas>
+          parameters:
+            gamma: 1.4
+            Rgas: 287.0
+        region:
+          name: domain
+      - name: densityvolumeFraction
+        type: FVM
+        region:
+          name: domain
+      - name: volumeFraction
+        type: FVM
+        region:
+          name: domain
+      - name: pressure
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: gasDensity
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: liquidDensity
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: gasEnergy
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: liquidEnergy
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: debug
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: debug1
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: debug2
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: debug3
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: rank
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: phitilde_surfaceforce
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: kappa
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: sf_magnitude
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: xpos
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - name: ypos
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - !<!ablate::domain::FieldDescription>
+        name: cellLocations
+        prefix: cellLocations
+        components: [x2, y2]
+        location: AUX
+        type: FVM
+        region:
+          name: domain
+      - !<!ablate::domain::FieldDescription>
+        name: vertexLocations
+        prefix: vertexLocations
+        components: [x3, y3]
+        location: AUX
+        type: FE
+        region:
+          name: domain
+        options:
+          petscspace_degree: 1
+  initialization:
+    - fieldName: volumeFraction
+      field: !<!ablate::levelSet::VOFMathFunction> &2
+        domain: *1
+        levelSet: !<!ablate::mathFunctions::Formula>
+          formula: y - (   0.5*0.85*0.2*(1+sin(2*3.141592*x/(0.2/(2*2)))) * 0.5*(1 + sign(sin(3.141592*x/(0.2/(2*2)) +3.141592/4 )))  +0.2*(1-0.85)/2   )
+    - !<!ablate::finiteVolume::fieldFunctions::Euler>
+      state: &3
+        eos: !<!ablate::eos::TwoPhase> &4
+          eos1: !<!ablate::eos::PerfectGas>
+            parameters:
+              gamma: 1.4
+              Rgas: 287.0
+          eos2: !<!ablate::eos::PerfectGas>
+            parameters:
+              gamma: 1.67
+              Rgas: 208.1
+        temperature: 300
+        pressure: 1e5
+        velocity: min(100,max(100/0.17 * (y-0.015),0)),0
+        other:
+          fieldName: volumeFraction
+          field: *2
+    - !<!ablate::finiteVolume::fieldFunctions::DensityVolumeFraction>
+      state: *3
+solver: !<!ablate::finiteVolume::FiniteVolumeSolver>
+  id: flow solver
+  region:
+    name: interiorCells
+  processes:
+    - !<!ablate::finiteVolume::processes::NavierStokesTransport>
+      eos: !<!ablate::eos::PerfectGas>
+        parameters:
+          gamma: 0
+          Rgas: 0
+      transport: !<!ablate::eos::transport::TwoPhaseTransport>
+        transport1: !<!ablate::eos::transport::Constant>
+          k: 0.03
+          mu: 1.83e-5
+        transport2: !<!ablate::eos::transport::Constant>
+          k: 0.018
+          mu: 22.61e-6
+    - !<!ablate::finiteVolume::processes::TwoPhaseEulerAdvection>
+      parameters:
+        cfl: 0.5
+      eos: *4
+      fluxCalculatorGasGas: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+      fluxCalculatorGasLiquid: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+      fluxCalculatorLiquidGas: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+      fluxCalculatorLiquidLiquid: !<!ablate::finiteVolume::fluxCalculator::AusmpUp> ""
+    - !<!ablate::finiteVolume::processes::IntSharp>
+      Gamma: 1.0e-1
+      epsilon: 5.0e-5
+      flipPhiTilde: true
+      alphaOnly: true
+      disableBJSlopeLimiter: true
+    - !<!ablate::finiteVolume::processes::SurfaceForce>
+      sigma: 50.0
+      C: 1
+      N: 2.0
+      flipPhiTilde: true
+      applyToSolution: true
+      bottomWallMaskCells: 4
+      periodicSeamMaskCells: 2
+  boundaryConditions:
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
+      boundaryName: euler_top
+      labelIds: [boundaryCellsTop]
+      boundaryValue:
+        fieldName: euler
+        field: !<!ablate::mathFunctions::Formula>
+          formula: 1.602, 157215.0, 160.2, 0.0
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
+      boundaryName: vf_top
+      labelIds: [boundaryCellsTop]
+      boundaryValue:
+        fieldName: densityvolumeFraction
+        field: !<!ablate::mathFunctions::Formula>
+          formula: 0
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
+      boundaryName: alpha_top
+      labelIds: [boundaryCellsTop]
+      boundaryValue:
+        fieldName: volumeFraction
+        field: 0
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
+      boundaryName: euler_bottom
+      labelIds: [boundaryCellsBottom]
+      boundaryValue:
+        fieldName: euler
+        field: !<!ablate::mathFunctions::Formula>
+          formula: 1.16144018583042973286, 250000, 0.0, 0.0
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
+      boundaryName: vf_bottom
+      labelIds: [boundaryCellsBottom]
+      boundaryValue:
+        fieldName: densityvolumeFraction
+        field: !<!ablate::mathFunctions::Formula>
+          formula: 1.16144018583042973286
+    - !<!ablate::finiteVolume::boundaryConditions::EssentialBoundary>
+      boundaryName: alpha_bottom
+      labelIds: [boundaryCellsBottom]
+      boundaryValue:
+        fieldName: volumeFraction
+        field: 1
+  monitors:
+    - !<!ablate::monitors::TimeStepMonitor>
+      interval: 5000

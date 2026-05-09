@@ -12,7 +12,13 @@
 
 //ablate::finiteVolume::processes::IntSharp::IntSharp(PetscReal Gamma, PetscReal epsilon) : Gamma(Gamma), epsilon(epsilon) {}
 
-ablate::finiteVolume::processes::SurfaceForce::SurfaceForce(PetscReal sigma, PetscReal C, PetscReal N, bool flipPhiTilde, bool applyToSolution) : sigma(sigma), C(C), N(N), flipPhiTilde(flipPhiTilde), applyToSolution(applyToSolution) {}
+ablate::finiteVolume::processes::SurfaceForce::SurfaceForce(PetscReal sigma, PetscReal C, PetscReal N, bool flipPhiTilde, bool applyToSolution, PetscInt bottomWallMaskCells, PetscInt periodicSeamMaskCells, bool laplaceYoungTest, PetscReal laplaceYoungTestKappaC)
+    : sigma(sigma), C(C), N(N), flipPhiTilde(flipPhiTilde), applyToSolution(applyToSolution), bottomWallMaskCells(bottomWallMaskCells), periodicSeamMaskCells(periodicSeamMaskCells),
+      laplaceYoungTest(laplaceYoungTest), laplaceYoungTestKappaC(laplaceYoungTestKappaC),
+      yMinCached(0.0), hCached(0.0),
+      xMinCached(0.0), xMaxCached(0.0), xLenCached(0.0), xHalfCached(0.0),
+      yMaxCached(0.0), yLenCached(0.0), yHalfCached(0.0),
+      zMinCached(0.0), zMaxCached(0.0), zLenCached(0.0), zHalfCached(0.0) {}
 ablate::finiteVolume::processes::SurfaceForce::~SurfaceForce() { DMDestroy(&vertexDM) >> utilities::PetscUtilities::checkError; }
 
 PetscReal GaussianDerivativeFactor(const PetscReal *x, const PetscReal s,  const PetscInt dx, const PetscInt dy, const PetscInt dz) {
@@ -360,6 +366,42 @@ void ablate::finiteVolume::processes::SurfaceForce::Setup(ablate::finiteVolume::
         DMPlexVertexRestoreCells(dm, vertex, &nvn, &vertexneighbors);
     }
 
+    // Cache mesh y-min, full bounding box, and minRadius once at Setup time.
+    // Two consumers in ComputeSource read these every RHS eval:
+    //   (1) bottom-wall SF mask (yMinCached, hCached)
+    //   (2) periodic neighbor coordinate fix (xMin/xMax/xLen/xHalf and Y/Z analogues)
+    // DMGetBoundingBox is expensive enough that we MUST NOT call it per-step;
+    // doing so previously was a measurable hot path.  An axis-aligned box-shaped
+    // domain doesn't move during the run, so the cache is valid for the run.
+    {
+        PetscReal bbMin[3] = {0, 0, 0};
+        PetscReal bbMax[3] = {0, 0, 0};
+        DMGetBoundingBox(dm, bbMin, bbMax);
+        xMinCached = bbMin[0]; xMaxCached = bbMax[0];
+        yMinCached = bbMin[1]; yMaxCached = bbMax[1];
+        zMinCached = bbMin[2]; zMaxCached = bbMax[2];
+        xLenCached = xMaxCached - xMinCached; xHalfCached = 0.5 * xLenCached;
+        yLenCached = yMaxCached - yMinCached; yHalfCached = 0.5 * yLenCached;
+        zLenCached = zMaxCached - zMinCached; zHalfCached = 0.5 * zLenCached;
+        DMPlexGetMinRadius(dm, &hCached);
+        PetscPrintf(PETSC_COMM_WORLD,
+                    "[SurfaceForce::Setup] Cached bounding box: x=[%g,%g] y=[%g,%g] z=[%g,%g], minRadius=%g\n",
+                    xMinCached, xMaxCached, yMinCached, yMaxCached, zMinCached, zMaxCached, hCached);
+        if (bottomWallMaskCells > 0) {
+            PetscPrintf(PETSC_COMM_WORLD,
+                        "[SurfaceForce::Setup] Bottom-wall mask: SF suppressed for cells with y < yMin + %d * h = %g + %d * %g = %g\n",
+                        (int)bottomWallMaskCells, yMinCached, (int)bottomWallMaskCells, 2.0*hCached,
+                        yMinCached + bottomWallMaskCells * 2.0 * hCached);
+        }
+        if (periodicSeamMaskCells > 0) {
+            PetscPrintf(PETSC_COMM_WORLD,
+                        "[SurfaceForce::Setup] Periodic-seam mask: SF suppressed within %d cell layers of x=[%g] or x=[%g] (cutoffs: %g, %g)\n",
+                        (int)periodicSeamMaskCells, xMinCached, xMaxCached,
+                        xMinCached + 2.0 * hCached * (PetscReal)periodicSeamMaskCells,
+                        xMaxCached - 2.0 * hCached * (PetscReal)periodicSeamMaskCells);
+        }
+    }
+
     flow.RegisterRHSFunction(ComputeSource, this);
 }
 
@@ -374,16 +416,18 @@ PetscErrorCode ablate::finiteVolume::processes::SurfaceForce::ComputeSource(cons
     const auto &phiField = subDomain->GetField(TwoPhaseEulerAdvection::VOLUME_FRACTION_FIELD);
     auto dim = solver.GetSubDomain().GetDimensions();
 
-//PetscReal xymin[dim], xymax[dim]; DMGetBoundingBox(dm, xymin, xymax);
-//PetscReal xmin=xymin[0];
-//PetscReal xmax=xymax[0];
-//PetscReal ymin=xymin[1];
-//PetscReal ymax=xymax[1];
-//PetscReal zmin=xymin[2];
-//PetscReal zmax=xymax[2];
-
-// PetscReal xmin = -0.05; PetscReal xmax = 0.05; PetscReal ymin = -0.05; PetscReal ymax = 0.05; PetscReal zmin = 0; PetscReal zmax = 0.2;
-PetscReal xmin = -0.00; PetscReal xmax = 0.1; PetscReal ymin = -0.00; PetscReal ymax = 0.025; PetscReal zmin = 0; PetscReal zmax = 0.2;
+// Pull cached bounding-box values populated in Setup().  DMGetBoundingBox is
+// expensive (multiple parallel reductions) and was previously called every RHS
+// evaluation here, which is 4x per RK step on a hot path.  An axis-aligned box
+// mesh doesn't change shape during the run, so a one-time cache is sufficient.
+// (Was previously also hardcoded to a stale tiny [0,0.1]x[0,0.025] box that
+// was wrong for any case with a different geometry.)
+PetscReal xmin = process->xMinCached; PetscReal xmax = process->xMaxCached;
+PetscReal ymin = process->yMinCached; PetscReal ymax = process->yMaxCached;
+PetscReal zmin = process->zMinCached; PetscReal zmax = process->zMaxCached;
+PetscReal halfX = process->xHalfCached;
+PetscReal halfY = process->yHalfCached;
+PetscReal halfZ = process->zHalfCached;
 
 
     const auto &ofield3 = subDomain->GetField("phitilde_surfaceforce");
@@ -413,10 +457,8 @@ PetscReal xmin = -0.00; PetscReal xmax = 0.1; PetscReal ymin = -0.00; PetscReal 
         fArray = nullptr;  // Don't touch the RHS vector
     }
 
-    // --- Determinism: Print checksum of solution vector at start ---
-    PetscReal solNormStart = 0.0;
-    VecNorm(locX, NORM_2, &solNormStart);
-    PetscPrintf(PETSC_COMM_WORLD, "[SurfaceForce::ComputeSource] Start solution norm: %g\n", solNormStart);
+    // (per-call solution-norm prints removed -- they were dominating wall time
+    // on long runs; re-enable with -info ablate.surfaceforce if needed.)
 
     ablate::domain::Range cellRange;
     solver.GetCellRangeWithoutGhost(cellRange);
@@ -670,32 +712,41 @@ if (process->flipPhiTilde){*phitilde = 1.00- *phitilde;} }
                 PetscReal xn, yn, zn; Get3DCoordinate(dm, neighbor, &xn, &yn, &zn);
 
 
-bool periodicfix = false;
-
-if (periodicfix){
-
-//temporary fix addressing how multiple layers of neighbors for a periodic domain return coordinates on the opposite side
-PetscReal maxMask = 0.5*(ymax-ymin);
-if (( PetscAbs(xn-xc) > maxMask) and (xn > xc)){  
-    
-    // PetscPrintf(PETSC_COMM_WORLD, "C- N+ BEFORE xn: %f, xc: %f, xmax: %f, xmin: %f, maxMask: %f\n", xn, xc, xmax, xmin, maxMask);
-    xn -= (xmax-xmin);  
-    // PetscPrintf(PETSC_COMM_WORLD, "C- N+ AFTER xn: %f, xc: %f, xmax: %f, xmin: %f, maxMask: %f\n", xn, xc, xmax, xmin, maxMask);
-}
-if (( PetscAbs(xn-xc) > maxMask) and (xn < xc)){  
-
-    // PetscPrintf(PETSC_COMM_WORLD, "C+ N- BEFORE xn: %f, xc: %f, xmax: %f, xmin: %f, maxMask: %f\n", xn, xc, xmax, xmin, maxMask);    
-    xn += (xmax-xmin);
-    // PetscPrintf(PETSC_COMM_WORLD, "C+ N- AFTER xn: %f, xc: %f, xmax: %f, xmin: %f, maxMask: %f\n", xn, xc, xmax, xmin, maxMask);
-
-}
-if (dim>=2){
-if (( PetscAbs(yn-yc) > maxMask) and (yn > yc)){  yn -= (ymax-ymin);  }
-if (( PetscAbs(yn-yc) > maxMask) and (yn < yc)){  yn += (ymax-ymin);  } }
-if (dim==3){
-if (( PetscAbs(zn-zc) > maxMask) and (zn > zc)){  zn -= (zmax-zmin);  }
-if (( PetscAbs(zn-zc) > maxMask) and (zn < zc)){  zn += (zmax-zmin);  } }
-
+// Periodic-neighbor coordinate fix.  When the domain is periodic, DMPlexGetNeighbors
+// (with the DistributeWithGhostCells halo) returns ghost cells representing the
+// opposite-side periodic image, but the coordinate query on those ghost cells reports
+// the ORIGINAL (unshifted) location -- e.g. a center cell at xc=0.199 sees its periodic
+// neighbor reported at xn=0.001, not xn=0.201.  The Gaussian distance kernel then
+// computes d ~ Lx (huge) instead of d ~ h (tiny), so the actual neighbor receives
+// effectively zero weight and the stencil becomes one-sided across the seam.  With
+// surface-tension body force this asymmetry pumps mass across the seam and produces a
+// growing checkerboard pattern in pure-air cells far from the interface, eventually
+// crashing the run with rho->0 / NaN.  Detect any neighbor that's "across the seam"
+// (i.e. logically separated by more than half the domain) and shift its coordinate by
+// +/- L back to the side it actually occupies relative to the center cell.
+//
+// This is safe to leave on for non-periodic axes too: if the axis isn't periodic, no
+// neighbor can ever satisfy |xn-xc| > L/2 because the topological neighborhood is
+// confined to a few cell widths.  Per-axis half-spans (halfX, halfY, halfZ) replace
+// the previous single scalar maxMask = 0.5*(ymax-ymin) which was wrong for non-square
+// domains and wildly wrong here because the hardcoded bounding box was a stale 0.025
+// y-span.
+// Periodic shift toggle.  Set FALSE to compare against the unpatched (no-shift)
+// behavior; TRUE applies the shift described above.
+const bool periodicShiftEnabled = true;
+if (periodicShiftEnabled) {
+    if (PetscAbs(xn - xc) > halfX) {
+        if (xn > xc) xn -= (xmax - xmin);
+        else         xn += (xmax - xmin);
+    }
+    if (dim >= 2 && PetscAbs(yn - yc) > halfY) {
+        if (yn > yc) yn -= (ymax - ymin);
+        else         yn += (ymax - ymin);
+    }
+    if (dim == 3 && PetscAbs(zn - zc) > halfZ) {
+        if (zn > zc) zn -= (zmax - zmin);
+        else         zn += (zmax - zmin);
+    }
 }
 
 
@@ -741,30 +792,34 @@ if ((cell==0) and (*rankptr == 5)){  std::cout << "";   }
         PetscScalar *nvptr; xDMPlexPointLocalRef(nvDM, vertex, -1, nvLocalArray, &nvptr);
         *nvptr = 0;
     }
+    // Compute vertex unit-normal nv = grad(phitilde) / |grad(phitilde)| at EVERY vertex,
+    // not just those adjacent to the phitildemask region.  The previous logic zeroed nv
+    // for far-from-interface vertices, which introduced a sharp discontinuity at the mask
+    // boundary -- div(nv) at cells straddling that discontinuity blew up to spurious
+    // O(1/h) values, contaminating kappa.  Far from the interface phitilde is uniform
+    // (0 or 1), so grad(phitilde) is naturally near zero and the |grad|>tol guard keeps nv
+    // at that near-zero gradient; div(near-zero) is also near-zero, so kappa stays clean
+    // outside the active band and matches the legitimate 1/R curvature on the band.
+    PetscReal const nvNormTol = 1e-8;  // raised slightly from 1e-10 to suppress noise on
+                                       // tiny far-field gradients that would otherwise
+                                       // be normalised to spurious unit vectors.
     for (PetscInt vertex = vStart; vertex < vEnd; vertex++) {
-        PetscReal vx, vy, vz; Get3DCoordinate(dm, vertex, &vx, &vy, &vz);
-        PetscInt nCells, *cells; DMPlexVertexGetCells(dm, vertex, &nCells, &cells);
-        PetscBool isAdjToMask = PETSC_FALSE;
-        for (PetscInt k = 0; k < nCells; k++){
-            PetscScalar *phitildemaskptr; xDMPlexPointLocalRef(phitildemaskDM, cells[k], -1, phitildemaskLocalArray, &phitildemaskptr) >> ablate::utilities::PetscUtilities::checkError;
-            if (*phitildemaskptr > 0.5){
-                isAdjToMask = PETSC_TRUE;
-            }
-        }
         PetscScalar *nv; xDMPlexPointLocalRef(nvDM, vertex, -1, nvLocalArray, &nv);
-        if (isAdjToMask == PETSC_TRUE){
-            DMPlexVertexGradFromCell(phitildeDM, vertex, phitildeLocalVec, -1, 0, nv);
-            //surface area force DOES normalize;
-            //surface volume force DOES NOT normalize
-            if (utilities::MathUtilities::MagVector(dim, nv) > 1e-10) { utilities::MathUtilities::NormVector(dim, nv); }
+        DMPlexVertexGradFromCell(phitildeDM, vertex, phitildeLocalVec, -1, 0, nv);
+        if (utilities::MathUtilities::MagVector(dim, nv) > nvNormTol) {
+            utilities::MathUtilities::NormVector(dim, nv);
+        } else {
+            // Below the guard threshold, zero it out cleanly so it doesn't bleed
+            // tiny non-radial components into kappa via div(nv).
+            for (PetscInt d = 0; d < dim; ++d) nv[d] = 0.0;
         }
-        else{ *nv=0; }
-        DMPlexVertexRestoreCells(dm, vertex, &nCells, &cells);
     }
     PushToGhost(nvDM, nvLocalVec, nvGlobalVec, INSERT_VALUES);
 
 
     //kappa auxDM copy
+    PetscInt nKappaClipped = 0;          // LAPLACE-YOUNG TEST: clipped cells
+    PetscReal kappaAbsMaxObserved = 0.0; // LAPLACE-YOUNG TEST: max |kappa| seen this step
     for (PetscInt cell = cStart; cell < cEnd; ++cell) {
         PetscReal xc, yc, zc; Get3DCoordinate(dm, cell, &xc, &yc, &zc);
         PetscReal kappa=0, Nx, Ny, Nz;
@@ -797,10 +852,38 @@ if ((cell==0) and (*rankptr == 5)){  std::cout << "";   }
         }
         else { kappa=Nx=Ny=Nz=0; }
         kappa *= -1; Nx *= -1; Ny *= -1; Nz *= -1;
+
+        // LAPLACE-YOUNG TEST: grid-relative kappa cap.
+        //
+        // Earlier absolute caps (200, 1014 m^-1) did not help because they
+        // were either too tight (kicked in for the natural curvature
+        // 1/R0~50 m^-1 of the unperturbed star) or too loose (didn't tame
+        // the cusp).  The right scale is GRID-relative: kappa_max = C/dx
+        // with C ~ 5-10.  Below this we have a single-cell-resolved
+        // structure, above which kappa is unphysical (a cusp tip
+        // singular at the cell scale).  hCached stores DMPlexGetMinRadius
+        // (~ dx/2), so dx = 2*hCached and kappa_max = C / (2*hCached).
+        //
+        // Diagnostic: count how many cells were clipped, track max |kappa| pre-clip.
+        if (process->laplaceYoungTest && process->hCached > 0.0) {
+            if (PetscAbsReal(kappa) > kappaAbsMaxObserved) kappaAbsMaxObserved = PetscAbsReal(kappa);
+            const PetscReal kappaMax = process->laplaceYoungTestKappaC / (2.0 * process->hCached);
+            if (kappa >  kappaMax) { kappa =  kappaMax; ++nKappaClipped; }
+            if (kappa < -kappaMax) { kappa = -kappaMax; ++nKappaClipped; }
+        }
+
         PetscScalar *kappaptr; xDMPlexPointLocalRef(kappaDM, cell, -1, kappaLocalArray, &kappaptr) >> ablate::utilities::PetscUtilities::checkError;
         PetscScalar *nptr; xDMPlexPointLocalRef(nDM, cell, -1, nLocalArray, &nptr) >> ablate::utilities::PetscUtilities::checkError;
         *kappaptr = kappa;
         nptr[0]=Nx; nptr[1]=Ny; nptr[2]=Nz;
+    }
+    if (process->laplaceYoungTest) {
+        PetscPrintf(PETSC_COMM_WORLD,
+                    "[SurfaceForce::laplaceYoungTest] |kappa|_max(observed)=%.3e 1/m  cap=%.3e 1/m (C=%g, dx=%g)  clipped=%d cells\n",
+                    (double)kappaAbsMaxObserved,
+                    (double)(process->laplaceYoungTestKappaC / (2.0 * process->hCached)),
+                    (double)process->laplaceYoungTestKappaC, (double)(2.0 * process->hCached),
+                    (int)nKappaClipped);
     }
     PushToGhost(kappaDM, kappaLocalVec, kappaGlobalVec, INSERT_VALUES);
 
@@ -809,6 +892,27 @@ if ((cell==0) and (*rankptr == 5)){  std::cout << "";   }
     if (verbose){SaveDataToFile(cellRange.start, cellRange.end, zDM, zLocalArray, "z", false);}
     if (verbose){SaveDataToFile(cellRange.start, cellRange.end, kappaDM, kappaLocalArray, "kappa", true);}
 
+    // Optional bottom-wall mask: anything below yMin + bottomWallMaskCells*h
+    // is forced to have zero surface-tension force.  Without this, even with
+    // a no-slip Dirichlet u=0 at the wall, the SF stencil reaches across the
+    // bottom of the wavelet and pulls the wall surface up, violating the
+    // physical "anchored base" the dissertation assumes (Sec. 4.3 explicitly
+    // says |u|=0 at y=0 -- the base of every wavelet should be flat).
+    const PetscReal yMaskCutoff = (process->bottomWallMaskCells > 0)
+        ? (process->yMinCached + 2.0 * process->hCached * (PetscReal)process->bottomWallMaskCells)
+        : -PETSC_INFINITY;
+    // Optional periodic-x seam mask: zero SF body force in cells within
+    // periodicSeamMaskCells*h of either x boundary.  Used when the FV
+    // flux solver doesn't perfectly couple periodic neighbors at the
+    // seam (residual asymmetry produces a slowly growing checkerboard
+    // mode in pure-air cells far from the interface).  This sidesteps
+    // the residual issue at the cost of suppressing SF in a thin band
+    // near the seam, which is acceptable as long as the interface
+    // doesn't reach the seam during the run.
+    const bool seamMaskOn = (process->periodicSeamMaskCells > 0);
+    const PetscReal seamLeftCutoff  = process->xMinCached + 2.0 * process->hCached * (PetscReal)process->periodicSeamMaskCells;
+    const PetscReal seamRightCutoff = process->xMaxCached - 2.0 * process->hCached * (PetscReal)process->periodicSeamMaskCells;
+
     for (PetscInt cell = cStart; cell < cEnd; ++cell){
         PetscReal *phitildemaskptr; xDMPlexPointLocalRef(phitildemaskDM, cell, -1, phitildemaskLocalArray, &phitildemaskptr);
         PetscScalar *kappaptr; xDMPlexPointLocalRef(kappaDM, cell, -1, kappaLocalArray, &kappaptr);
@@ -816,7 +920,20 @@ if ((cell==0) and (*rankptr == 5)){  std::cout << "";   }
         PetscScalar *sfxptr; xDMPlexPointLocalRef(sfxDM, cell, -1, sfxLocalArray, &sfxptr);
         PetscScalar *sfyptr; xDMPlexPointLocalRef(sfyDM, cell, -1, sfyLocalArray, &sfyptr);
         PetscScalar *sfzptr; xDMPlexPointLocalRef(sfzDM, cell, -1, sfzLocalArray, &sfzptr);
-        if(*phitildemaskptr > 0.5){
+
+        bool isBottomWallMasked = false;
+        bool isSeamMasked = false;
+        if (process->bottomWallMaskCells > 0 || seamMaskOn) {
+            PetscReal cx, cy, cz; Get3DCoordinate(dm, cell, &cx, &cy, &cz);
+            if (process->bottomWallMaskCells > 0) {
+                isBottomWallMasked = (cy < yMaskCutoff);
+            }
+            if (seamMaskOn) {
+                isSeamMasked = (cx < seamLeftCutoff) || (cx > seamRightCutoff);
+            }
+        }
+
+        if (*phitildemaskptr > 0.5 && !isBottomWallMasked && !isSeamMasked){
             *sfxptr = process->sigma * *kappaptr * -nptr[0];
             *sfyptr = process->sigma * *kappaptr * -nptr[1];
             *sfzptr = process->sigma * *kappaptr * -nptr[2];
@@ -905,10 +1022,7 @@ if ((cell==0) and (*rankptr == 5)){  std::cout << "";   }
         SaveDataToFile(cellRange.start, cellRange.end, sfzDM, sfzLocalArray, "sfz", true);
     }
 
-    // --- Determinism: Print checksum of solution vector at end ---
-    PetscReal solNormEnd = 0.0;
-    VecNorm(locX, NORM_2, &solNormEnd);
-    PetscPrintf(PETSC_COMM_WORLD, "[SurfaceForce::ComputeSource] End solution norm: %g\n", solNormEnd);
+    // (end solution-norm print removed for the same reason as the start one.)
 
 //    std::cout << "surfaceForce is done\n";
 
@@ -1009,5 +1123,11 @@ REGISTER(ablate::finiteVolume::processes::Process, ablate::finiteVolume::process
          ARG(PetscReal, "C", "stdev length with respect to grid spacing magnitude (default 1)"),
          ARG(PetscReal, "N", "number of stdevs that the convolution integral captures (default 2.6 for 99 pct accuracy if C=1)"),
          ARG(bool, "flipPhiTilde", "if true: phiTilde-->1-phiTilde (set it to true if primary phase is phi=0 or false if phi=1)"),
-         OPT(bool, "applyToSolution", "if true, apply the surface force to the solution field (default false)")
+         OPT(bool, "applyToSolution", "if true, apply the surface force to the solution field (default false)"),
+         OPT(PetscInt, "bottomWallMaskCells", "if > 0, suppress surface tension within this many cell layers of the bottom (y-min) wall (default 0 = off)"),
+         OPT(PetscInt, "periodicSeamMaskCells", "if > 0, suppress surface tension within this many cell layers of the periodic-x seam on either side (default 0 = off)"),
+         OPT(bool, "laplaceYoungTest", "if true: enable Laplace-Young test mode -- clip |kappa| to laplaceYoungTestKappaC / dx_min before forming "
+                                       "sigma*kappa*n.  Tames cusp-tip singularities of the dissertation's sin(7*theta) star IC without affecting "
+                                       "the natural unperturbed curvature 1/R0.  Pair with IntSharp::laplaceYoungTest=true.  OFF by default."),
+         OPT(PetscReal, "laplaceYoungTestKappaC", "dimensionless cap C for grid-relative kappa limit kappa_max = C / dx_min (default 5.0).")
 );
